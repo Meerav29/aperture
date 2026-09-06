@@ -8,7 +8,7 @@
 //! - Idempotent: installing twice yields one entry per event.
 //!
 //! The hook command is a script we write to `~/.claude/hooks/`. It reads the
-//! payload from stdin, adds `deck_pid` (claude's PID, the hook's parent) and
+//! payload from stdin, adds `aperture_pid` (claude's PID, the hook's parent) and
 //! posts it to the local listener. It always exits 0, so a closed app never
 //! affects a session.
 

@@ -55,11 +55,11 @@ impl Store {
         if s.transcript_path.is_none() {
             s.transcript_path = p.transcript_path.clone();
         }
-        if let Some(pid) = p.deck_pid {
+        if let Some(pid) = p.aperture_pid {
             s.pid = Some(pid);
         }
         if s.host == Host::Unknown {
-            s.host = infer_host(p.deck_host_hint.as_deref());
+            s.host = infer_host(p.aperture_host_hint.as_deref());
         }
 
         match p.hook_event_name.as_str() {

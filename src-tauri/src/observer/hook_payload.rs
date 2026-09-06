@@ -3,7 +3,7 @@
 //! and keep the rest as `serde_json::Value` so an unfamiliar field never
 //! breaks ingestion.
 //!
-//! Our hook script (see `hooks_installer.rs`) also injects `deck_pid`
+//! Our hook script (see `hooks_installer.rs`) also injects `aperture_pid`
 //! (the hook's `$PPID`, i.e. the claude process) so we can jump to it later.
 
 use serde::Deserialize;
@@ -38,9 +38,9 @@ pub struct HookPayload {
 
     // Injected by our hook wrapper, not by Claude Code.
     #[serde(default)]
-    pub deck_pid: Option<u32>,
+    pub aperture_pid: Option<u32>,
     #[serde(default)]
-    pub deck_host_hint: Option<String>,
+    pub aperture_host_hint: Option<String>,
 
     #[serde(flatten)]
     pub extra: Value,
