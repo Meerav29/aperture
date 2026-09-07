@@ -3,7 +3,6 @@ pub mod observer;
 
 use std::sync::Arc;
 
-use tauri::Manager;
 use tokio::sync::Mutex;
 
 use commands::{push_snapshot, Shared};

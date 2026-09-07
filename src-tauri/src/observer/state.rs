@@ -17,7 +17,7 @@ use super::transcript::TranscriptSummary;
 
 #[derive(Default)]
 pub struct Store {
-    sessions: HashMap<String, Session>,
+    pub(crate) sessions: HashMap<String, Session>,
     pub hooks_installed: bool,
     pub listener_port: u16,
 }
