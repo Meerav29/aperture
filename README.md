@@ -1,7 +1,21 @@
 # Aperture
 
-One dashboard for every Claude Code session on your machine, whichever app
-started it. Currently a Phase 0 spike; see `SPIKE.md` for the plan.
+One desktop dashboard for externally started Claude Code and Codex sessions,
+across terminals, VS Code, and their desktop apps on Windows and macOS.
+
+**Current implementation:** a read-only Windows observer for Claude Code and
+Codex session files. Both providers update in one dashboard with identity,
+activity, attention evidence, freshness, and independent integration health.
+See [Windows validation](docs/validation/README.md) for measured coverage and
+limitations. Worktree grouping and cross-platform navigation remain planned.
+
+## Product and implementation documents
+
+- [Requirements](docs/requirements.md): product scope and acceptance criteria.
+- [Detailed specification](docs/specification.md): architecture, interfaces,
+  behavior, verification, and phases from right now through production readiness.
+- [Immediate spike](SPIKE.md): Phase 0 checklist and compatibility evidence.
+- [Observer decision](docs/adr/0001-observer-first.md): why sessions remain externally owned.
 
 ## Run it
 
@@ -13,29 +27,31 @@ npm install
 npm run tauri dev
 ```
 
-First run, click **Install hooks**. Then start Claude Code anywhere.
+No installation or provider settings changes are required. Aperture reads
+`~/.claude/projects` and `~/.codex/sessions` every two seconds. Set
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME` in Aperture's environment for non-default
+provider roots. Start and operate all sessions externally.
 
+The old hook installer, listener, and navigation commands are not registered
+by the desktop. No session launch/resume/control command is exposed.
 ## Layout
 
-```
-src-tauri/src/observer/   Rust core, no Tauri types
-  model.rs                Session + Snapshot (mirrored in src/features/sessions/types.ts)
-  hook_payload.rs         parses the JSON Claude Code sends to hooks
-  state.rs                the session state machine
-  transcript.rs           backfill from ~/.claude/projects/**/*.jsonl
-  hooks_installer.rs      merges our hooks into ~/.claude/settings.json
-  listener.rs             POST /hook on 127.0.0.1:47831
-src-tauri/hooks/          the scripts installed to ~/.claude/hooks/
-src-tauri/src/commands.rs Tauri commands, the only bridge to the UI
-src/features/sessions/    the grid, the card, the needs-you strip
-```
+- `src-tauri/src/observer/passive.rs`: read-only discovery, incremental JSONL readers, provider adapters, normalized updates.
+- `src-tauri/src/observer/model.rs` and `state.rs`: snapshot contract, sorting, freshness.
+- `src-tauri/src/commands.rs`: snapshot and rescan only.
+- `src/features/sessions`: mixed-provider cards and attention display.
+- `src-tauri/src/bin/observe.rs`: diagnostic CLI using the same observer as the desktop.
+- `src-tauri/tests/fixtures`: sanitized Windows session records.
 
 ## Useful checks
 
+```powershell
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo run --manifest-path src-tauri/Cargo.toml --bin observe -- 10
 ```
-cargo test --manifest-path src-tauri/Cargo.toml      # state machine, installer, parser
-curl http://127.0.0.1:47831/health                    # is the app listening
-echo '{"session_id":"t","hook_event_name":"SessionStart","cwd":"/tmp"}' \
-  | ~/.claude/hooks/aperture.sh                    # fake an event
-APERTURE_PORT=50000 npm run tauri dev              # use another port
-```
+
+The diagnostic argument is the number of polls, two seconds apart. It prints
+summaries only. Closing Aperture or the diagnostic stops observation and has no
+connection to either provider process. Cached summaries/cursors are in memory;
+restart backfills history without claiming that old sessions are live.

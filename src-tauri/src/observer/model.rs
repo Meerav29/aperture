@@ -37,6 +37,10 @@ pub enum Host {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
+    pub provider: String,
+    pub native_id: String,
+    pub attention: String,
+    pub observation: String,
     pub status: SessionStatus,
     pub host: Host,
     /// Working directory as reported by Claude Code. For worktree sessions
@@ -66,7 +70,11 @@ pub struct Session {
 impl Session {
     pub fn new(id: String, cwd: String, now: DateTime<Utc>) -> Self {
         Session {
+            native_id: id.clone(),
             id,
+            provider: "claude_code".into(),
+            attention: "unknown".into(),
+            observation: "history_only".into(),
             status: SessionStatus::Unknown,
             host: Host::Unknown,
             cwd,
@@ -93,7 +101,19 @@ impl Session {
 /// sessions.
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
+    pub revision: u64,
+    pub integrations: Vec<IntegrationHealth>,
     pub sessions: Vec<Session>,
     pub hooks_installed: bool,
     pub listener_port: u16,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct IntegrationHealth {
+    pub provider: String,
+    pub state: String,
+    pub root: String,
+    pub files: usize,
+    pub last_event_at: Option<DateTime<Utc>>,
+    pub detail: String,
 }

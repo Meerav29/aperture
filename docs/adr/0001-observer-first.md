@@ -1,24 +1,42 @@
-# ADR 0001: Build the observer before the spawner
+# ADR 0001: Observe externally owned agent sessions
 
-Status: accepted, 2026-09-04
+Status: accepted 2026-09-04; amended after the requirements review to include
+Codex alongside Claude Code and retain monitor-and-jump as the release scope.
 
 ## Decision
 
-Phase 0 tracks sessions we did not start, via user-level Claude Code hooks
-and transcript backfill. Spawning our own sessions (the `Runner` trait over
-stream-json) comes after.
+Aperture observes sessions started in other applications. Claude Code and Codex
+are equal first-release providers. Provider adapters translate lifecycle events
+and historical metadata into a shared model; Git identity, persistence,
+attention handling, and the dashboard are shared services.
 
-## Why
+The product is a Tauri desktop app for Windows and macOS. Users start and
+interact with agents in their preferred terminal, VS Code, or local provider
+desktop app. Aperture reports activity and offers verified navigation back.
 
-- No existing desktop tool (Conductor, Code Bar, claude-squad, herdr) shows
-  sessions it didn't create. This is the differentiator.
-- Hooks are a stable, documented interface. Bidirectional stream-json is not.
-- It's useful on day one without changing how you already use Claude Code.
+Spawning sessions, creating worktrees, sending prompts, stopping agents, and
+answering approvals are outside the current production release. They are not
+prerequisites or promised follow-on phases. Persistence and transcript watching
+belong to the observer and do not depend on a future spawner.
 
-## Findings to fill in during the spike
+## Rationale and consequences
 
-- Does the desktop app fire user-level hooks?            [ ] yes  [ ] no
-- Does it write transcripts to ~/.claude/projects/?       [ ] yes  [ ] no
-- Real transcript field names (paste `head -3` output):
-- Windows: does Claude Code run `.cmd` hooks directly?    [ ] yes  [ ] no
-- Jump-to-it: which terminals worked?
+- Observing external sessions preserves the user's existing workflow.
+- Provider identity is independent of host application and model name.
+- Hooks are the primary live-observation candidate; files provide historical
+  discovery and reconciliation through version-specific parsers.
+- No universal app-server attachment, transcript schema, process ancestry, or
+  exact-tab navigation is assumed. Compatibility must be demonstrated.
+- Unknown or stale evidence is displayed honestly; missing data is not idle.
+- Integration failure must not change agent behavior or permissions.
+- The earlier market-wide claim that no other tool observes external sessions
+  is withdrawn; this decision does not depend on an unverified competitor claim.
+
+## Evidence and follow-up
+
+The original desktop-hook, transcript, Windows command-hook, and navigation
+questions remain empirical checks. Track both providers and OSes in the
+[Phase 0 matrix](../../SPIKE.md), not as unchecked assumptions here.
+
+See [requirements](../requirements.md) and [specification](../specification.md)
+for the product contract, integration sources, and release gates.

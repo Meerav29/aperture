@@ -199,3 +199,16 @@ button.link {
 @media (prefers-reduced-motion: reduce) {
   .status-working .dot { animation: none; }
 }
+
+.integrations { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin: 20px 0 28px; }
+.integration { padding: 16px; border: 1px solid var(--rule); border-radius: 12px; }
+.integration h2 { font-size: 16px; margin: 0 0 12px; }
+.integration h2 span { font-weight: normal; color: #216344; }
+.integration p, .integration code { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.provider { padding: 3px 8px; border-radius: 5px; background: #f0f2f5; }
+.provider-codex { color: #216344; }
+.provider-claude_code { color: #8e4827; }
+
+.card-detail { font-size: 12px; line-height: 1.5; margin: 6px 0; color: var(--muted); overflow-wrap: anywhere; }
+.folder-filter { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.folder-filter select { font: inherit; padding: 8px; border: 1px solid var(--rule); border-radius: 6px; max-width: 85%; }

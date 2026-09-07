@@ -1,0 +1,260 @@
+[
+  {
+    "revision": 16,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:43:49.237Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:43:46.458Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "working",
+        "activity": "Prompt or tool result received",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:49.237Z"
+      },
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:31.83Z"
+      }
+    ]
+  },
+  {
+    "revision": 18,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:43:54.04Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:43:52.842Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "working",
+        "activity": "Tool: Bash",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:54.04Z"
+      },
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:31.83Z"
+      }
+    ]
+  },
+  {
+    "revision": 19,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:43:56.887Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:43:52.842Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "working",
+        "activity": "Prompt or tool result received",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:56.887Z"
+      },
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:31.83Z"
+      }
+    ]
+  },
+  {
+    "revision": 21,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:44:00.362Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:43:52.842Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:44:00.362Z"
+      },
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:43:31.83Z"
+      }
+    ]
+  },
+  {
+    "revision": 33,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:44:00.362Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:44:24.845Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "working",
+        "activity": "Thinking",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:44:24.845Z"
+      },
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:44:00.362Z"
+      }
+    ]
+  },
+  {
+    "revision": 34,
+    "integrations": [
+      {
+        "provider": "claude_code",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.claude\\projects",
+        "files": 34,
+        "last_event_at": "2026-09-07T02:44:00.362Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      },
+      {
+        "provider": "codex",
+        "state": "watching",
+        "root": "C:\\Users\\meera\\.codex\\sessions",
+        "files": 65,
+        "last_event_at": "2026-09-07T02:44:27.725Z",
+        "detail": "Read-only files; 2s polling. Permission/input prompts and process liveness are not available. 0 read errors; 0 malformed/oversize records this scan. Settings untouched."
+      }
+    ],
+    "sessions": [
+      {
+        "provider": "codex",
+        "native_id": "01a079ba-ab46-7d82-a5db-989390b8cea5",
+        "cwd": "C:\\Users\\meera\\Github-Projects\\aperture",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:44:27.725Z"
+      },
+      {
+        "provider": "claude_code",
+        "native_id": "e8de9487-e1a0-4cbb-9a13-6fa43d610868",
+        "cwd": "C:\\Users\\meera\\Github-Projects",
+        "status": "idle",
+        "activity": "Turn complete",
+        "attention": "unknown",
+        "observation": "recent",
+        "last_event_at": "2026-09-07T02:44:00.362Z"
+      }
+    ]
+  }
+]

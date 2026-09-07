@@ -1,8 +1,7 @@
 //! In-memory session store and the state machine that folds events into it.
 //!
-//! Two event sources feed this: live hook payloads (`apply_hook`) and
-//! transcript backfill (`apply_transcript`). Later, the spawner layer's
-//! `Runner` becomes a third source, calling the same methods.
+//! The desktop is fed by passive provider adapters. Legacy hook/backfill
+//! reducers remain for compatibility tests, but are not exposed by desktop IPC.
 //!
 //! Merge rule: hooks win for `status`/`activity`, transcripts win for counts
 //! and tokens. A backfilled session never overwrites a live one's status.
@@ -17,6 +16,8 @@ use super::transcript::TranscriptSummary;
 
 #[derive(Default)]
 pub struct Store {
+    pub revision: u64,
+    pub integrations: Vec<super::model::IntegrationHealth>,
     pub(crate) sessions: HashMap<String, Session>,
     pub hooks_installed: bool,
     pub listener_port: u16,
@@ -25,14 +26,21 @@ pub struct Store {
 impl Store {
     pub fn snapshot(&self) -> Snapshot {
         let mut sessions: Vec<Session> = self.sessions.values().cloned().collect();
-        // Blocked first, then working, then by recency. The UI groups by repo
-        // but relies on this order within a group.
+        for s in &mut sessions {
+            if s.observation == "recent" && (Utc::now() - s.last_event_at).num_seconds() > 60 {
+                s.observation = "stale".into();
+                s.live = false;
+            }
+        }
+        // Most recently observed activity first; status breaks timestamp ties.
         sessions.sort_by(|a, b| {
-            rank(a.status)
-                .cmp(&rank(b.status))
-                .then(b.last_event_at.cmp(&a.last_event_at))
+            b.last_event_at
+                .cmp(&a.last_event_at)
+                .then(rank(a.status).cmp(&rank(b.status)))
         });
         Snapshot {
+            revision: self.revision,
+            integrations: self.integrations.clone(),
             sessions,
             hooks_installed: self.hooks_installed,
             listener_port: self.listener_port,
@@ -161,6 +169,7 @@ impl Store {
 
     pub fn remove(&mut self, id: &str) {
         self.sessions.remove(id);
+        self.revision += 1;
     }
 }
 
@@ -197,9 +206,8 @@ mod tests {
     use super::*;
 
     fn ev(id: &str, name: &str, extra: &str) -> HookPayload {
-        let raw = format!(
-            r#"{{"session_id":"{id}","hook_event_name":"{name}","cwd":"/repo" {extra}}}"#
-        );
+        let raw =
+            format!(r#"{{"session_id":"{id}","hook_event_name":"{name}","cwd":"/repo" {extra}}}"#);
         serde_json::from_str(&raw).unwrap()
     }
 

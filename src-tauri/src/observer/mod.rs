@@ -5,5 +5,6 @@ pub mod hook_payload;
 pub mod hooks_installer;
 pub mod listener;
 pub mod model;
+pub mod passive;
 pub mod state;
 pub mod transcript;

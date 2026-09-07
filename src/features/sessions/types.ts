@@ -12,6 +12,10 @@ export type Host = "terminal" | "vs_code" | "desktop_app" | "headless" | "unknow
 
 export interface Session {
   id: string;
+  native_id: string;
+  provider: string;
+  attention: string;
+  observation: string;
   status: SessionStatus;
   host: Host;
   cwd: string;
@@ -31,7 +35,10 @@ export interface Session {
   live: boolean;
 }
 
+export interface IntegrationHealth { provider: string; state: string; root: string; files: number; last_event_at: string | null; detail: string; }
 export interface Snapshot {
+  revision: number;
+  integrations: IntegrationHealth[];
   sessions: Session[];
   hooks_installed: boolean;
   listener_port: number;

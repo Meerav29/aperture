@@ -54,6 +54,7 @@ dependencies = [
  "axum",
  "chrono",
  "dirs 5.0.1",
+ "open",
  "serde",
  "serde_json",
  "tauri",

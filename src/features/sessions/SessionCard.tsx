@@ -1,85 +1,28 @@
-import type { Session, SessionStatus, Host } from "./types";
-import { fmtTokens, shortPath, timeAgo } from "./useSessions";
+import type { Session } from "./types";
+import { shortPath, timeAgo } from "./useSessions";
+import { ipc } from "../../lib/ipc";
 
-const STATUS_LABEL: Record<SessionStatus, string> = {
-  unknown: "Not tracked",
-  idle: "Waiting for you",
-  working: "Working",
-  blocked: "Needs permission",
-  errored: "Errored",
-  ended: "Ended",
-};
-
-const HOST_LABEL: Record<Host, string> = {
-  terminal: "Terminal",
-  vs_code: "VS Code",
-  desktop_app: "Claude app",
-  headless: "Headless",
-  unknown: "",
-};
-
-interface Props {
-  session: Session;
-  onJump: (id: string) => void;
-  onForget: (id: string) => void;
+// Navigation is a capability-based fallback chain, not exact-session focus:
+// Aperture never verified a live PID or window handle, so the only honest
+// actions are "open the folder" and "reveal the transcript file's folder" in
+// the OS file manager. See docs/specification.md "Navigation order".
+export function SessionCard({ session: s }: { session: Session }) {
+  const provider = s.provider === "codex" ? "Codex" : "Claude Code";
+  return <article className={`card status-${s.status}`} aria-label={`${provider}, ${s.status}`}>
+    <header className="card-head"><strong className={`provider provider-${s.provider}`}>{provider}</strong><span className="card-status">{s.status}</span><span className="card-time">{timeAgo(s.last_event_at)}</span></header>
+    <h3 className="card-name">{s.cwd.split(/[\\/]/).pop() || "Unknown directory"}</h3>
+    <p className="card-line">{s.activity ?? "Activity unavailable"}</p>
+    <p className="card-detail">Attention: {s.attention === "unknown" ? "unknown (permission prompts unavailable)" : s.attention.replace(/_/g, " ")}</p>
+    <p className="card-detail">Observation: {s.observation.replace(/_/g, " ")} · process liveness unknown</p>
+    <footer className="card-foot">
+      <code className="card-path">{shortPath(s.cwd)}</code>
+      <code title={s.native_id}>{s.native_id.slice(0, 8)}</code>
+      <button type="button" disabled={!s.cwd} onClick={() => ipc.openSessionFolder(s.id)}>Open folder</button>
+      <button type="button" disabled={!s.transcript_path} onClick={() => ipc.revealTranscript(s.id)}>Reveal transcript</button>
+    </footer>
+  </article>;
 }
-
-export function SessionCard({ session: s, onJump, onForget }: Props) {
-  const name = s.git_branch ?? s.cwd.split(/[\\/]/).pop() ?? s.id.slice(0, 8);
-  const line = s.status === "blocked" ? s.blocked_on : s.activity;
-
-  return (
-    <article className={`card status-${s.status}`} aria-label={`${name}, ${STATUS_LABEL[s.status]}`}>
-      <header className="card-head">
-        <span className="dot" aria-hidden="true" />
-        <span className="card-status">{STATUS_LABEL[s.status]}</span>
-        {s.host !== "unknown" && <span className="card-host">{HOST_LABEL[s.host]}</span>}
-        <span className="card-time">{timeAgo(s.last_event_at)}</span>
-      </header>
-
-      <h3 className="card-name">{name}</h3>
-      {s.title && <p className="card-title">{s.title}</p>}
-      <p className="card-line">{line ?? (s.live ? "Nothing running" : "History only")}</p>
-
-      <footer className="card-foot">
-        <code className="card-path">{shortPath(s.cwd)}</code>
-        <span className="card-meta">
-          {s.user_messages} turns, {fmtTokens(s.input_tokens + s.output_tokens)} tokens
-        </span>
-        <span className="card-actions">
-          {s.live && (
-            <button type="button" onClick={() => onJump(s.id)}>
-              Go to session
-            </button>
-          )}
-          <button type="button" className="quiet" onClick={() => onForget(s.id)}>
-            Remove
-          </button>
-        </span>
-      </footer>
-    </article>
-  );
-}
-
-/** The one loud element. Rendered only when something is blocked. */
-export function NeedsYou({ sessions, onJump }: { sessions: Session[]; onJump: (id: string) => void }) {
-  if (sessions.length === 0) return null;
-  return (
-    <section className="needs-you" role="alert">
-      <h2>
-        {sessions.length === 1 ? "One session needs you" : `${sessions.length} sessions need you`}
-      </h2>
-      <ul>
-        {sessions.map((s) => (
-          <li key={s.id}>
-            <span className="ny-name">{s.git_branch ?? shortPath(s.cwd)}</span>
-            <span className="ny-what">{s.blocked_on ?? "Permission prompt"}</span>
-            <button type="button" onClick={() => onJump(s.id)}>
-              Go to session
-            </button>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
+export function NeedsYou({ sessions }: { sessions: Session[] }) {
+  if (!sessions.length) return null;
+  return <section className="needs-you" role="status"><h2>{sessions.length === 1 ? "One session needs attention" : `${sessions.length} sessions need attention`}</h2><ul>{sessions.map(s => <li key={s.id}>{s.provider === "codex" ? "Codex" : "Claude Code"} · {s.native_id.slice(0,8)}: {(s.blocked_on ?? s.attention).replace(/_/g, " ")}</li>)}</ul></section>;
 }
