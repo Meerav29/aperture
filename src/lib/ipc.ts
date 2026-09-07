@@ -6,11 +6,9 @@ import type { Snapshot } from "../features/sessions/types";
 
 export const ipc = {
   getSnapshot: () => invoke<Snapshot>("get_snapshot"),
-  installHooks: () => invoke<void>("install_hooks"),
-  uninstallHooks: () => invoke<void>("uninstall_hooks"),
   rescanTranscripts: () => invoke<number>("rescan_transcripts"),
-  forgetSession: (id: string) => invoke<void>("forget_session", { id }),
-  jumpToSession: (id: string) => invoke<string>("jump_to_session", { id }),
+  openSessionFolder: (id: string) => invoke<void>("open_session_folder", { id }),
+  revealTranscript: (id: string) => invoke<void>("reveal_transcript", { id }),
   onSnapshot: (cb: (s: Snapshot) => void): Promise<UnlistenFn> =>
     listen<Snapshot>("sessions:snapshot", (e) => cb(e.payload)),
 };

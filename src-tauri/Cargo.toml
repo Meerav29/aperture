@@ -1,8 +1,9 @@
 [package]
 name = "aperture"
+default-run = "aperture"
 version = "0.1.0"
 edition = "2021"
-description = "One dashboard for every Claude Code session on your machine"
+description = "Read-only dashboard for externally started Claude Code and Codex sessions"
 
 [lib]
 name = "aperture_lib"
@@ -21,3 +22,4 @@ axum = "0.7"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
 thiserror = "1"
+open = "5"

@@ -2,19 +2,28 @@ import { useCallback, useEffect, useState } from "react";
 import { ipc } from "../../lib/ipc";
 import type { Session, Snapshot } from "./types";
 
-const EMPTY: Snapshot = { sessions: [], hooks_installed: false, listener_port: 0 };
+const EMPTY: Snapshot = { revision: 0, integrations: [], sessions: [], hooks_installed: false, listener_port: 0 };
 
 export function useSessions() {
   const [snap, setSnap] = useState<Snapshot>(EMPTY);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
-    ipc.getSnapshot().then(setSnap).catch((e) => setNotice(String(e)));
-    ipc.onSnapshot(setSnap).then((u) => (unlisten = u));
-    return () => unlisten?.();
+    const accept = (next: Snapshot) => {
+      if (!disposed) setSnap(previous => next.revision >= previous.revision ? next : previous);
+    };
+    void (async () => {
+      try {
+        const stop = await ipc.onSnapshot(accept);
+        if (disposed) { stop(); return; }
+        unlisten = stop;
+        accept(await ipc.getSnapshot());
+      } catch (e) { if (!disposed) setNotice(String(e)); }
+    })();
+    return () => { disposed = true; unlisten?.(); };
   }, []);
-
   const run = useCallback(async (label: string, fn: () => Promise<unknown>) => {
     try {
       const r = await fn();
@@ -28,11 +37,7 @@ export function useSessions() {
     snap,
     notice,
     dismissNotice: () => setNotice(null),
-    installHooks: () => run("Hooks installed", ipc.installHooks),
-    uninstallHooks: () => run("Hooks removed", ipc.uninstallHooks),
     rescan: () => run("Rescanned", ipc.rescanTranscripts),
-    forget: (id: string) => run("Removed", () => ipc.forgetSession(id)),
-    jump: (id: string) => run("Jump", () => ipc.jumpToSession(id)),
   };
 }
 

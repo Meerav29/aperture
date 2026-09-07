@@ -1,0 +1,13 @@
+{"type":"session_meta","timestamp":"2026-09-07T02:35:24.145Z","payload":{"cwd":"C:\\fixture","cli_version":"0.153.4","id":"fixture-session"}}
+{"type":"event_msg","timestamp":"2026-09-07T02:35:24.145Z","payload":{"type":"task_started"}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:24.606Z","payload":{"role":"developer","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:24.606Z","payload":{"role":"developer","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:24.606Z","payload":{"role":"developer","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:24.606Z","payload":{"role":"user","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:24.749Z","payload":{"role":"user","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:27.501Z","payload":{"role":"assistant","type":"message","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:28.419Z","payload":{"role":null,"type":"custom_tool_call","name":"exec"}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:32.181Z","payload":{"role":null,"type":"custom_tool_call_output","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:34.689Z","payload":{"role":null,"type":"reasoning","name":null}}
+{"type":"response_item","timestamp":"2026-09-07T02:35:35.885Z","payload":{"role":"assistant","type":"message","name":null}}
+{"type":"event_msg","timestamp":"2026-09-07T02:35:35.986Z","payload":{"type":"task_complete"}}

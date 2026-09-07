@@ -119,8 +119,18 @@ pub fn summarize(path: &Path) -> Option<TranscriptSummary> {
                 }
             }
             Some("summary") => {
-                // Claude Code writes a rolling summary line; use it as a title.
+                // Older Claude Code versions wrote a rolling summary line;
+                // kept as a fallback in case a transcript still has one.
                 if let Some(s) = str_field(&v, "summary") {
+                    title = Some(s);
+                }
+            }
+            Some("custom-title") => {
+                // Real transcripts (verified against a live Claude Code
+                // session) use this line, not `summary`, for the title the
+                // UI shows. `customTitle` wins over any `summary` fallback
+                // since it's what the client currently sets and edits.
+                if let Some(s) = str_field(&v, "customTitle") {
                     title = Some(s);
                 }
             }
@@ -193,5 +203,21 @@ mod tests {
         assert_eq!(s.assistant_messages, 1);
         assert_eq!(s.input_tokens, 10);
         assert_eq!(s.output_tokens, 5);
+    }
+
+    #[test]
+    fn title_comes_from_custom_title_line() {
+        // Verified against a live ~/.claude/projects/*.jsonl transcript:
+        // current Claude Code writes `custom-title`/`customTitle`, not the
+        // `summary` line the parser originally assumed.
+        let dir = std::env::temp_dir().join("aperture-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("sess-2.jsonl");
+        let mut f = File::create(&p).unwrap();
+        writeln!(f, r#"{{"type":"custom-title","customTitle":"Hero planet animation tuning","sessionId":"sess-2"}}"#).unwrap();
+        writeln!(f, r#"{{"type":"user","sessionId":"sess-2","cwd":"/r","timestamp":"2026-09-04T10:00:00Z","message":{{"role":"user","content":"hi"}}}}"#).unwrap();
+
+        let s = summarize(&p).unwrap();
+        assert_eq!(s.title.as_deref(), Some("Hero planet animation tuning"));
     }
 }
