@@ -1,10 +1,11 @@
 //! In-memory session store and the state machine that folds events into it.
 //!
-//! The desktop is fed by passive provider adapters. Legacy hook/backfill
-//! reducers remain for compatibility tests, but are not exposed by desktop IPC.
+//! The desktop is fed by passive provider adapters and an optional metadata
+//! inbox. The apply_hook/apply_transcript reducers below are legacy paths;
+//! the active optional hook reducer lives in hook_bridge.rs.
 //!
-//! Merge rule: hooks win for `status`/`activity`, transcripts win for counts
-//! and tokens. A backfilled session never overwrites a live one's status.
+//! Active merging preserves unresolved attention against incidental transcript
+//! activity. Legacy backfill keeps the historical hook/count merge behavior.
 
 use std::collections::HashMap;
 
@@ -16,6 +17,8 @@ use super::transcript::TranscriptSummary;
 
 #[derive(Default)]
 pub struct Store {
+    pub(crate) hook_activity: HashMap<String, chrono::DateTime<Utc>>,
+    pub(crate) hook_pending: HashMap<String, std::collections::HashSet<String>>,
     pub revision: u64,
     pub integrations: Vec<super::model::IntegrationHealth>,
     pub(crate) sessions: HashMap<String, Session>,

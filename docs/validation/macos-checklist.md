@@ -1,108 +1,144 @@
-# macOS validation checklist (manual — needs a real Mac)
+# macOS validation handoff
 
-Nothing here can be done from the Windows machine this repo was otherwise
-validated on. `docs/validation/README.md` documents Windows evidence; this
-file exists so the same rigor gets applied on macOS instead of being inferred
-from Windows, which `docs/specification.md` explicitly forbids ("never infer
-macOS results from Windows").
+Status: **pending real Mac execution**. The project owner has no Mac; this
+checklist is for the friend who will clone and run the project. Windows results
+do not establish macOS compatibility. A macOS CI build can catch compile/test
+failures but cannot replace the signed-in application checks below.
 
-Do this on a Mac with: Claude Code CLI, the Claude Code VS Code extension,
-Claude Desktop (Code tab), the Codex CLI, the Codex VS Code extension, and the
-Codex desktop app all installed and already signed in. You do not need to
-touch this repo's Rust/TS code to do the validation runs — only to build and
-launch the app.
+Read [product vision](../product-vision.md), [current goals](../goals.md), and
+[Windows evidence](README.md). Target local Claude Code and Codex sessions in
+Terminal.app, VS Code extensions, and provider desktop coding apps. Ordinary
+Claude Chat/Cowork, remote sessions, WSL, and containers are outside this test.
 
-## 0. Build and run
+## 1. Prepare and record the exact revision
 
-```
-git clone <this repo> aperture   # or pull this branch
+Install Node 20+, Rust stable, Git, and the
+[Tauri macOS prerequisites](https://v2.tauri.app/start/prerequisites/).
+Install/sign in to both providers' CLI, VS Code extension, and desktop apps.
+Do not share credentials or copy provider configuration to the repository.
+
+Run from Terminal.app:
+
+```sh
+git clone https://github.com/Meerav29/aperture.git
 cd aperture
-npm install
+git rev-parse HEAD
+sw_vers
+uname -m
+node --version
+rustc --version
+claude --version
+codex --version
+npm ci
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 npm run tauri dev
 ```
 
-Confirm the window opens and the top panel shows `Claude Code watching` and
-`Codex watching` (or `no_sessions`/`degraded` — note which, and why, if either
-provider isn't `watching`). Leave it running for the rest of this checklist;
-it polls automatically every 2 seconds and needs no clicks.
+If using an existing clone, first inspect git status and preserve local work
+before updating. The latest Windows changes must be committed/pushed before a
+clone can contain them; confirm the intended commit with the owner. Do not test
+an old revision and label it as the latest implementation.
 
-## 1. Six real sessions, one per row
+Record macOS version, architecture, commit, CLI versions, desktop app versions,
+and extension versions. Build failures are useful results: retain the error and
+stop claiming runtime success until fixed.
 
-For each of the six combinations below, start a **disposable** session (a
-throwaway prompt like "reply with the word pong" — do not interrupt real
-work) and watch the Aperture window pick it up within a few seconds.
+## 2. Establish passive discovery
 
-| # | Provider | Host | How to start it |
+With Aperture open, confirm separate provider integration health. Default file
+roots are ~/.claude/projects and ~/.codex/sessions. Non-default roots can be
+supplied through CLAUDE_CONFIG_DIR and CODEX_HOME in Aperture's environment.
+An intentional custom configuration root is not automatically a product bug.
+Record the effective roots with usernames redacted in shared evidence.
+
+Use disposable local work, not important existing tasks. The human tester
+starts and operates sessions in their original app; Aperture must not do so.
+Test one session created before Aperture opens and one created afterwards.
+
+## 3. Run each required combination
+
+| Provider | Host | Procedure | Result |
 |---|---|---|---|
-| 1 | Claude Code | Terminal | `claude -p "reply with the word pong"` in Terminal.app |
-| 2 | Claude Code | VS Code | Open a folder in VS Code, use the Claude Code extension's panel/chat to send a prompt |
-| 3 | Claude Code | Desktop | Open the Claude desktop app, Code tab, start a session |
-| 4 | Codex | Terminal | `codex exec "reply with the word pong"` in Terminal.app |
-| 5 | Codex | VS Code | Open a folder in VS Code, use the Codex extension to send a prompt |
-| 6 | Codex | Desktop | Open the Codex desktop app, start a session |
+| Claude Code | Terminal | Start interactive claude in Terminal.app and send a small prompt | Pending |
+| Claude Code | VS Code | Use its local extension chat in a disposable folder | Pending |
+| Claude Code | Desktop Code | Use the desktop Code experience with local execution | Pending |
+| Codex | Terminal | Start interactive codex in Terminal.app and send a small prompt | Pending |
+| Codex | VS Code | Use its local extension chat in a disposable folder | Pending |
+| Codex | Desktop | Use the desktop app with local execution | Pending |
 
-For each one, record:
-- Did a new card appear in Aperture within ~5 seconds of the session
-  producing its first output? (This is "Events: Verified/Unverified".)
-- Provider label shown (Claude Code / Codex) — correct?
-- Status shown (working/idle/etc.) and whether it changed when the session
-  went from generating to done — correct?
-- `cwd`/folder name shown — correct?
+Non-interactive claude -p and codex exec may be extra checks, but cannot stand
+in for the interactive terminal row. For every row separately, record:
 
-## 2. Real transcript/session file locations
+- Discovery of the correct provider/session, working directory, and host label.
+- Prompt -> working -> tool activity -> completed turn, with visible timings.
+- One explicit question and one permission request if that host/version supports
+  them. Respond in the original host and check attention clears accurately.
+- Interruption and normal session close; unknown process liveness must remain
+  unknown, not a fabricated end/idle state.
+- Aperture closed during agent work, then restarted: agent work is unaffected;
+  backfilled history is not falsely labeled live.
+- Run one Claude session and one Codex session concurrently to check identities.
 
-Confirm these are the actual roots on macOS (they may differ from Windows —
-Codex in particular is not guaranteed to use `~/.codex`):
+A transcript discovered from a host proves file discovery only. A historical
+file or metadata label cannot mark all lifecycle or permission checks passed.
+Usage limits or unavailable features mean the relevant test is pending/blocked.
 
+## 4. Optional hook enrichment
+
+Passive observation must work without installing anything. If the tested
+revision offers explicit hook setup, follow the [helper setup report](windows-compatibility-followup.md)
+and that revision's README, adapting the executable path to macOS, and record
+whether hooks are enabled and supported by each installed provider version.
+Preserve a local backup and compare provider settings before/after setup/removal;
+only Aperture-owned entries may change. Do not share raw settings.
+
+Check permission attention with hooks enabled, then with the integration
+disabled/unavailable. Missing signals must be labeled unknown. Never enable
+automatic approval, bypass permission checks, or add hooks that make decisions
+merely to produce a passing observer test.
+
+## 5. Navigation, restart, and display
+
+Click Open folder and Reveal transcript for each host; record precisely whether
+Finder opens the working directory or transcript-containing folder. Do not call
+folder navigation exact-session focus. Check missing paths and OS-denied actions
+produce understandable failures. Test ordinary window resize and display scaling.
+
+Restart Aperture and sleep/wake the Mac during disposable activity. Check
+history/health/freshness and ensure no agent work is started or stopped by
+Aperture. Record limitations rather than changing expected results after a failure.
+
+## 6. Return evidence
+
+Create docs/validation/macos-results.md in a branch or send the owner a sanitized
+Markdown report. Use this template for EACH host:
+
+```text
+Date/time/timezone:
+Commit:
+macOS version / architecture:
+Provider / CLI version / app or extension version:
+Host / local execution:
+Passive or hooks enabled:
+Effective root (redacted):
+Disposable session ID (redacted consistently if needed):
+Steps:
+Discovery result:
+Prompt/tool/finish result:
+Permission/input request and resolution result:
+Interruption/session-close result:
+Restart/sleep-wake result:
+Navigation action and actual result:
+Build/test outputs:
+Evidence references (sanitized screenshot or trace):
+Known failures / pending checks:
 ```
-ls ~/.claude/projects/*/*.jsonl | head -3
-ls ~/.codex/sessions/**/*.jsonl | head -3
-```
 
-If either path differs from `~/.claude/projects` or `~/.codex/sessions`
-(check `CLAUDE_CONFIG_DIR`/`CODEX_HOME` env vars too), that's a required code
-change in `src-tauri/src/observer/passive.rs::Observer::default()`, not just
-a doc update — flag it, don't silently work around it locally.
+Do not commit raw prompts, source code from unrelated repos, credentials,
+full environment dumps, or unsanitized transcripts. Use fixtures containing only
+fields needed to reproduce parser issues. Keep settings backups on your Mac.
 
-## 3. Host-label fields — confirm they still hold on macOS
-
-Run this against a real Codex session file from each of the three Codex hosts
-above:
-
-```
-grep -o '"originator":"[^"]*"' ~/.codex/sessions/**/*.jsonl | sort -u
-```
-
-Expected values (confirmed on Windows, needs re-confirmation here):
-`"Codex Desktop"`, `"codex_vscode"`, and for a terminal `codex exec` run,
-`"codex_exec"`. If macOS reports different strings, `infer_codex_host` in
-`passive.rs` needs new cases — it currently only matches on `vscode` and
-`desktop` substrings, so a differently-worded macOS originator may already
-work, but confirm it rather than assume it.
-
-For Claude Code, confirm the negative result also holds on macOS — that
-`entrypoint` (`cli`/`claude-vscode`/`claude-desktop`) does **not** appear as a
-top-level field in `~/.claude/projects/*/*.jsonl` (it should only show up
-nested inside some other plugin's echoed hook debug output, if that plugin is
-installed):
-
-```
-grep -c '"entrypoint"' ~/.claude/projects/*/*.jsonl
-```
-
-## 4. Navigation
-
-Click "Open folder" and "Reveal transcript" on a couple of cards. Confirm
-Finder opens the right folder both times. Note whether macOS shows any
-permission prompt for this (Automation/Full Disk Access) that Windows didn't.
-
-## 5. Write up the results
-
-Copy `docs/validation/README.md`'s format: which sessions you used (IDs,
-provider versions — `claude --version` / `codex --version`), what Aperture
-showed, timestamps, and any surprises. Update the `macOS` rows in `SPIKE.md`'s
-compatibility table from `Unverified`/`Pending` to `Verified` (or leave
-specific cells `Unverified` with a one-line reason if something didn't work —
-do not mark a row verified because the other five looked fine). If you hit a
-divergence from step 2 or 3, fix `passive.rs` and re-run `cargo test
---manifest-path src-tauri/Cargo.toml` before calling it done.
+Update SPIKE.md only for capabilities actually demonstrated; attach this result
+file and exact evidence. Fixes require rerunning the affected tests on the Mac.
+All six rows must have the required evidence before declaring macOS validated.

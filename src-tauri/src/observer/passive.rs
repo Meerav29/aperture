@@ -51,6 +51,9 @@ impl Observer {
     }
 
     pub fn poll(&mut self, store: &mut Store) {
+        let hook_errors = super::hook_bridge::inbox()
+            .map(|root| super::hook_bridge::poll(&root, store))
+            .unwrap_or(0);
         let mut health = Vec::new();
         for (provider, root) in &self.roots {
             let mut files = Vec::new();
@@ -73,12 +76,36 @@ impl Observer {
                 .map(|s| s.last_event_at)
                 .max();
             health.push(IntegrationHealth {
-                provider: provider.clone(), root: root.to_string_lossy().into_owned(), files: files.len(), last_event_at: last,
-                state: if errors > 0 || malformed > 0 { "degraded" } else if files.is_empty() { "no_sessions" } else { "watching" }.into(),
-                detail: format!("Read-only files; 2s polling. Explicit question tools are observed; permission prompts and process liveness are unknown. {errors} read errors; {malformed} skipped records. Settings untouched."),
+                provider: provider.clone(),
+                root: root.to_string_lossy().into_owned(),
+                files: files.len(),
+                last_event_at: last,
+                state: if errors > 0 || malformed > 0 {
+                    "degraded"
+                } else if files.is_empty() {
+                    "no_sessions"
+                } else {
+                    "watching"
+                }
+                .into(),
+                detail: format!("{errors} file read errors; {malformed} skipped records."),
             });
         }
         store.integrations = health;
+        for integration in &mut store.integrations {
+            let last_hook = store.hook_activity.get(&integration.provider);
+            integration.detail = format!(
+                "Read-only files; 2s polling. Optional hook metadata: {}. Permission requests are observations, not proof a dialog remains open. Process liveness unknown. {hook_errors} hook inbox errors. Provider settings untouched.",
+                last_hook.map(|at| format!("last received {}", at.to_rfc3339())).unwrap_or_else(|| "not observed; permission coverage unknown".into())
+            ) + &format!(" {}", integration.detail);
+            if hook_errors > 0 {
+                integration.state = "degraded".into();
+            }
+            if let Some(at) = last_hook {
+                integration.last_event_at =
+                    Some(integration.last_event_at.map_or(*at, |old| old.max(*at)));
+            }
+        }
         store.revision += 1;
     }
 }
@@ -129,6 +156,7 @@ fn read_file(
     if meta.len() < cursor.offset || replaced {
         cursor.offset = 0;
         cursor.id = None;
+        cursor.host = None;
         cursor.initial_len = meta.len();
         cursor.malformed = 0;
     }
@@ -214,12 +242,8 @@ fn adapt(
         let p = &v["payload"];
         if kind == "session_meta" {
             *id = p["id"].as_str().map(str::to_owned);
-            // Codex self-reports where it's running (verified against real
-            // ~/.codex/sessions/*.jsonl: "originator":"Codex Desktop" and
-            // "codex_vscode" have been observed; a plain CLI run reports
-            // neither and is treated as Terminal). This is more reliable
-            // than sniffing the process tree, which Claude Code's passive
-            // transcript gives us no equivalent field for (see SPIKE.md).
+            // Prefer self-reported host metadata over process-name guesses.
+            // Missing or unfamiliar metadata remains Unknown.
             *host = Some(infer_codex_host(
                 p["originator"].as_str(),
                 p["source"].as_str(),
@@ -268,6 +292,14 @@ fn adapt(
     } else {
         if v["isSidechain"].as_bool() == Some(true) {
             return None;
+        }
+        if let Some(entrypoint) = v["entrypoint"].as_str() {
+            *host = Some(match entrypoint {
+                "claude-desktop" => Host::DesktopApp,
+                "claude-vscode" => Host::VsCode,
+                "cli" => Host::Terminal,
+                _ => Host::Unknown,
+            });
         }
         if let Some(native) = v["sessionId"].as_str() {
             *id = Some(native.into());
@@ -324,10 +356,8 @@ fn adapt(
 /// Map Codex's self-reported `session_meta` fields to a host kind. Verified
 /// real values: "Codex Desktop" (Desktop), "codex_vscode" (VS Code), and
 /// "codex_exec" for a non-interactive `codex exec` run in a plain terminal
-/// (Terminal). The interactive `codex` TUI in a terminal was not verified
-/// separately (see SPIKE.md); an unrecognized but present originator is
-/// treated as `Terminal` as the current best guess, while a completely
-/// absent field stays `Unknown` rather than assuming that guess blind.
+/// (Headless). Explicit CLI metadata maps to Terminal; the interactive TUI
+/// still needs live validation. Missing or unfamiliar values remain Unknown.
 fn infer_codex_host(originator: Option<&str>, source: Option<&str>) -> Host {
     let o = originator.unwrap_or("").to_ascii_lowercase();
     let s = source.unwrap_or("").to_ascii_lowercase();
@@ -335,7 +365,9 @@ fn infer_codex_host(originator: Option<&str>, source: Option<&str>) -> Host {
         Host::VsCode
     } else if o.contains("desktop") {
         Host::DesktopApp
-    } else if !o.is_empty() {
+    } else if o == "codex_exec" || s == "exec" {
+        Host::Headless
+    } else if o == "codex_cli_rs" || s == "cli" {
         Host::Terminal
     } else {
         Host::Unknown
@@ -358,9 +390,6 @@ fn apply(store: &mut Store, provider: &str, path: &Path, event: Event, appended:
         s.native_id = event.id.clone();
         s
     });
-    if event.at < s.last_event_at {
-        return;
-    }
     if let Some(cwd) = event.cwd {
         s.cwd = cwd;
     }
@@ -369,9 +398,31 @@ fn apply(store: &mut Store, provider: &str, path: &Path, event: Event, appended:
             s.host = h;
         }
     }
+    s.transcript_path = Some(path.to_string_lossy().into_owned());
+    if event.at < s.last_event_at {
+        return;
+    }
+    // Permission hooks carry evidence absent from generic transcript entries.
+    // Only a terminal lifecycle record or matching hook may resolve that wait.
+    if matches!(s.attention.as_str(), "permission" | "explicit_input")
+        && !matches!(
+            event.status,
+            SessionStatus::Idle | SessionStatus::Ended | SessionStatus::Errored
+        )
+    {
+        return;
+    }
     s.status = event.status;
+    if s.status != SessionStatus::Blocked {
+        store.hook_pending.remove(&s.id);
+    }
     s.activity = Some(event.activity);
     s.attention = event.attention.into();
+    s.blocked_on = if s.status == SessionStatus::Blocked {
+        s.activity.clone()
+    } else {
+        None
+    };
     s.transcript_path = Some(path.to_string_lossy().into_owned());
     s.last_event_at = event.at;
     s.started_at.get_or_insert(event.at);
@@ -448,7 +499,9 @@ mod tests {
         );
         let codex = json!({"type":"response_item","timestamp":ts,"payload":{"type":"function_call","name":"request_user_input"}});
         assert_eq!(
-            adapt("codex", &codex, &mut id, &mut host).unwrap().attention,
+            adapt("codex", &codex, &mut id, &mut host)
+                .unwrap()
+                .attention,
             "explicit_input"
         );
     }
@@ -508,21 +561,98 @@ mod tests {
         let mut id = None;
         let mut host = None;
         let desktop = json!({"type":"session_meta","timestamp":ts,"payload":{"id":"d1","originator":"Codex Desktop","cwd":"C:\\r"}});
-        apply(&mut store, "codex", Path::new("f"), adapt("codex", &desktop, &mut id, &mut host).unwrap(), true);
+        apply(
+            &mut store,
+            "codex",
+            Path::new("f"),
+            adapt("codex", &desktop, &mut id, &mut host).unwrap(),
+            true,
+        );
 
         let mut id = None;
         let mut host = None;
         let vscode = json!({"type":"session_meta","timestamp":ts,"payload":{"id":"v1","originator":"codex_vscode","source":"vscode","cwd":"C:\\r"}});
-        apply(&mut store, "codex", Path::new("f"), adapt("codex", &vscode, &mut id, &mut host).unwrap(), true);
+        apply(
+            &mut store,
+            "codex",
+            Path::new("f"),
+            adapt("codex", &vscode, &mut id, &mut host).unwrap(),
+            true,
+        );
 
         let mut id = None;
         let mut host = None;
         let cli = json!({"type":"session_meta","timestamp":ts,"payload":{"id":"c1","cwd":"C:\\r"}});
-        apply(&mut store, "codex", Path::new("f"), adapt("codex", &cli, &mut id, &mut host).unwrap(), true);
+        apply(
+            &mut store,
+            "codex",
+            Path::new("f"),
+            adapt("codex", &cli, &mut id, &mut host).unwrap(),
+            true,
+        );
 
         assert_eq!(store.sessions["codex:d1"].host, Host::DesktopApp);
         assert_eq!(store.sessions["codex:v1"].host, Host::VsCode);
         assert_eq!(store.sessions["codex:c1"].host, Host::Unknown);
+    }
+
+    #[test]
+    fn hosts_are_explicit_and_claude_attachment_metadata_survives() {
+        assert_eq!(infer_codex_host(Some("unrecognized"), None), Host::Unknown);
+        assert_eq!(infer_codex_host(Some("codex_exec"), None), Host::Headless);
+        assert_eq!(
+            infer_codex_host(Some("codex_cli_rs"), Some("cli")),
+            Host::Terminal
+        );
+        for (entrypoint, expected) in [
+            ("claude-desktop", Host::DesktopApp),
+            ("claude-vscode", Host::VsCode),
+            ("cli", Host::Terminal),
+            ("new-host", Host::Unknown),
+        ] {
+            let mut id = None;
+            let mut host = None;
+            let attachment = json!({"type":"attachment","sessionId":"s","entrypoint":entrypoint});
+            assert!(adapt("claude_code", &attachment, &mut id, &mut host).is_none());
+            let prompt = json!({"type":"user","sessionId":"s","timestamp":Utc::now().to_rfc3339()});
+            assert_eq!(
+                adapt("claude_code", &prompt, &mut id, &mut host)
+                    .unwrap()
+                    .host,
+                Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn permission_survives_incidental_passive_activity_but_completion_resolves_it() {
+        let mut store = Store::default();
+        let now = Utc::now();
+        let mut session = Session::new("codex:s".into(), String::new(), now);
+        session.attention = "permission".into();
+        session.status = SessionStatus::Blocked;
+        store.sessions.insert(session.id.clone(), session);
+        let mut id = Some("s".into());
+        let mut host = None;
+        let tool = json!({"type":"response_item","timestamp":(now + chrono::Duration::milliseconds(1)).to_rfc3339(),"payload":{"type":"function_call_output"}});
+        apply(
+            &mut store,
+            "codex",
+            Path::new("fixture"),
+            adapt("codex", &tool, &mut id, &mut host).unwrap(),
+            true,
+        );
+        assert_eq!(store.sessions["codex:s"].status, SessionStatus::Blocked);
+        let done = json!({"type":"event_msg","timestamp":(now + chrono::Duration::milliseconds(2)).to_rfc3339(),"payload":{"type":"task_complete"}});
+        apply(
+            &mut store,
+            "codex",
+            Path::new("fixture"),
+            adapt("codex", &done, &mut id, &mut host).unwrap(),
+            true,
+        );
+        assert_eq!(store.sessions["codex:s"].status, SessionStatus::Idle);
+        assert_eq!(store.sessions["codex:s"].attention, "unknown");
     }
 
     #[test]

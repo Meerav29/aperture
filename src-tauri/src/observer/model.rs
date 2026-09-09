@@ -8,13 +8,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
-    /// Seen in a transcript but no live hook event yet; we don't know.
+    /// Available evidence does not establish a lifecycle state.
     Unknown,
     /// Waiting for the human to type something.
     Idle,
-    /// Claude is generating or running tools.
+    /// Observed generating or running tools; not proof the process is alive.
     Working,
-    /// A permission prompt is up. The human must act.
+    /// A permission or question request was observed; resolution is unknown.
     Blocked,
     /// The last turn ended with an API error (rate limit, overload, billing).
     Errored,
@@ -22,8 +22,8 @@ pub enum SessionStatus {
     Ended,
 }
 
-/// Where the session is being driven from. Best-effort inference; hooks don't
-/// tell us this directly, so we sniff the parent process at SessionStart.
+/// Host inferred from provider transcript metadata. Unknown values remain
+/// unknown; this label does not establish a live window or navigation target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Host {
@@ -43,19 +43,19 @@ pub struct Session {
     pub observation: String,
     pub status: SessionStatus,
     pub host: Host,
-    /// Working directory as reported by Claude Code. For worktree sessions
+    /// Working directory as reported by the provider. For worktree sessions
     /// this is the worktree path, not the main checkout.
     pub cwd: String,
     /// Repository root, if `cwd` is inside a git checkout or worktree.
     pub repo_root: Option<String>,
     pub git_branch: Option<String>,
     pub transcript_path: Option<String>,
-    /// PID of the `claude` process, when a hook told us. Used for jump-to-it.
+    /// Legacy hook PID. Active adapters do not establish process liveness.
     pub pid: Option<u32>,
     pub title: Option<String>,
     /// Human-readable "what is it doing right now", e.g. "Edit src/app.ts".
     pub activity: Option<String>,
-    /// The permission prompt text when Blocked, so the strip can show it.
+    /// Short attention description/tool name; optional hooks exclude raw input.
     pub blocked_on: Option<String>,
     pub started_at: Option<DateTime<Utc>>,
     pub last_event_at: DateTime<Utc>,
@@ -63,7 +63,7 @@ pub struct Session {
     pub assistant_messages: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// True when we have a live hook feed; false when only backfilled.
+    /// Recent observation flag, not a process-liveness guarantee.
     pub live: bool,
 }
 

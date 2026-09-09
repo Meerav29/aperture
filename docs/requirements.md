@@ -1,6 +1,10 @@
 # Aperture product requirements
 
-Status: agreed product direction; implementation incomplete.
+Status: agreed product direction; implementation incomplete. Reviewed 2026-09-07.
+
+[Product vision](product-vision.md) is the central source for enduring intent.
+This file translates that intent into acceptance criteria; [goals](goals.md)
+tracks implementation assignments and evidence status.
 
 This document supersedes the scope of the original Claude-only spike.
 [SPIKE.md](../SPIKE.md) now describes the immediate phase; the
@@ -89,3 +93,8 @@ to reduce scope silently. Exact-tab focus is capability-dependent; every host
 must have a working, accurately labeled navigation fallback. Pin supported OS
 versions/architectures and minimum provider versions from Phase 0 evidence
 before beta distribution.
+
+The owner has no Mac. A friend will perform the [macOS handoff](validation/macos-checklist.md)
+on an actual Mac. This dependency does not block Windows implementation work,
+but macOS compatibility and the cross-platform release cannot be marked complete
+until that evidence is returned. CI builds are supplemental compile/test evidence.

@@ -1,5 +1,21 @@
 # Windows two-provider observer validation
 
+## Reading this evidence
+
+This file retains the original Windows milestone and the later merged update.
+It is historical evidence, not a declaration that the full compatibility goal
+is complete. Read the [current follow-up](windows-compatibility-followup.md),
+[goal ledger](../goals.md), and [Phase 0 matrix](../../SPIKE.md) for current status.
+The owner has no Mac; [friend validation](macos-checklist.md) remains pending.
+
+Corrections from the 2026-09-07 audit: the broad Codex approval-channel and Claude
+host-field absence claims in the original follow-up were not established.
+Current Codex lifecycle documentation includes PermissionRequest, and the new
+Windows work found real Claude entrypoint metadata. Neither finding by itself
+proves live approval coverage across every installed host/version.
+
+## Original Windows milestone
+
 Validated on Windows x64 on September 6, 2026 (EDT; evidence timestamps are UTC).
 This is a passive file-observation milestone, not completion of every phase in
 `docs/specification.md` or the cross-platform compatibility matrix in `SPIKE.md`.
@@ -106,24 +122,26 @@ recorded above still apply except where superseded below.
   not affect the observation evidence — the session file and its
   `session_meta` line were written before the API call failed). Codex Desktop
   and VS Code originators come from real historical session files already on
-  this machine, not synthetic fixtures. Claude Code has no equivalent
-  self-reported field in its transcript (see `SPIKE.md`'s compatibility
-  table); this remains an explicit, open gap, not an oversight.
+  this machine, not synthetic fixtures. This update originally claimed Claude
+  had no equivalent transcript field. That conclusion is withdrawn: the new
+  follow-up found real entrypoint metadata. See its versioned evidence and the
+  current SPIKE.md matrix rather than inferring universal absence.
 - **Navigation implemented (partial, honest)**: `open_session_folder` and
   `reveal_transcript` Tauri commands open a session's `cwd` or the folder
   containing its `transcript_path` via the `open` crate. Both look the
   session up by Aperture's own store `id`, not an arbitrary caller-supplied
   path, per the specification's navigation-safety requirement. Window/tab
   focus and exact-session targeting remain unimplemented for every host.
-- **Confirmed the Codex approval-request gap is a provider limitation, not a
-  missing feature**: per Codex's own documentation and this machine's
-  `~/.codex/config.toml`, the external `notify` hook fires only on
-  `agent-turn-complete`; `approval-requested` only reaches a local terminal/OS
-  notification that nothing outside that process can observe. No file or hook
-  channel currently exposes Codex approval prompts to an external observer.
+- **Approval-channel conclusion withdrawn by the consolidation audit**: this
+  update inspected legacy notify behavior and incorrectly generalized it to
+  all integrations. [Codex lifecycle hooks](https://learn.chatgpt.com/docs/hooks)
+  document PermissionRequest. Installed-version/host support and observational
+  integration require verification; do not claim universal impossibility.
 - **Still not done**: Claude Code host label (needs the hook channel, not
   just files — see `SPIKE.md`); Claude Code permission-prompt attention via
   the passive desktop path (the hook-based code for this already exists in
   `hooks_installer.rs`/`state.rs` but isn't wired into `passive.rs`'s store);
   macOS validation of any of the above (see `docs/validation/macos-checklist.md`).
+  These were gaps at this update's revision; see the current follow-up before
+  carrying them forward as present-day implementation claims.
 

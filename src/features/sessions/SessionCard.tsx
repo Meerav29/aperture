@@ -12,7 +12,8 @@ export function SessionCard({ session: s }: { session: Session }) {
     <header className="card-head"><strong className={`provider provider-${s.provider}`}>{provider}</strong><span className="card-status">{s.status}</span><span className="card-time">{timeAgo(s.last_event_at)}</span></header>
     <h3 className="card-name">{s.cwd.split(/[\\/]/).pop() || "Unknown directory"}</h3>
     <p className="card-line">{s.activity ?? "Activity unavailable"}</p>
-    <p className="card-detail">Attention: {s.attention === "unknown" ? "unknown (permission prompts unavailable)" : s.attention.replace(/_/g, " ")}</p>
+    <p className="card-detail">Host: {s.host.replace(/_/g, " ")}</p>
+    <p className="card-detail">Attention: {s.attention === "unknown" ? "unknown (no confirmed attention signal)" : s.attention.replace(/_/g, " ")}</p>
     <p className="card-detail">Observation: {s.observation.replace(/_/g, " ")} · process liveness unknown</p>
     <footer className="card-foot">
       <code className="card-path">{shortPath(s.cwd)}</code>

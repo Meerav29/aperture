@@ -23,8 +23,9 @@ belong to the observer and do not depend on a future spawner.
 
 - Observing external sessions preserves the user's existing workflow.
 - Provider identity is independent of host application and model name.
-- Hooks are the primary live-observation candidate; files provide historical
-  discovery and reconciliation through version-specific parsers.
+- Passive session-file observation is the implemented baseline for both providers.
+  Optional observational hooks enrich attention and metadata missing from files;
+  enabling them must remain explicit and must never change agent decisions.
 - No universal app-server attachment, transcript schema, process ancestry, or
   exact-tab navigation is assumed. Compatibility must be demonstrated.
 - Unknown or stale evidence is displayed honestly; missing data is not idle.
@@ -40,3 +41,7 @@ questions remain empirical checks. Track both providers and OSes in the
 
 See [requirements](../requirements.md) and [specification](../specification.md)
 for the product contract, integration sources, and release gates.
+
+The [product vision](../product-vision.md) is the central intent reference.
+The owner has no Mac; a friend will run the [macOS handoff](../validation/macos-checklist.md).
+Windows work can proceed, but pending Mac runtime validation is not waived.

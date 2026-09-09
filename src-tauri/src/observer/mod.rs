@@ -1,7 +1,9 @@
-//! The observer: everything needed to see Claude Code sessions we didn't
-//! start. No Tauri types in here; `commands.rs` is the only bridge.
+//! Passive Claude Code/Codex observation and optional hook metadata enrichment.
+//! No Tauri types in here; `commands.rs` is the desktop bridge. Legacy HTTP and
+//! installer modules are retained but not started by the desktop.
 
 pub mod hook_payload;
+pub mod hook_bridge;
 pub mod hooks_installer;
 pub mod listener;
 pub mod model;

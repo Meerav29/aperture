@@ -1,134 +1,105 @@
-# Phase 0 — Right now: prove external observation for both providers
+# Phase 0 — Two-provider observation and compatibility
 
-Status: next implementation phase; not completed.
+Status: Windows passive milestone demonstrated; full compatibility/attention
+goal **in progress**. Reviewed 2026-09-07 after consolidation at 9df871d.
 
-This replaces the original Claude-only, four-day spike. See the authoritative
-[requirements](docs/requirements.md) and [detailed specification](docs/specification.md).
+Read [product vision](docs/product-vision.md), [requirements](docs/requirements.md),
+[goals](docs/goals.md), and [specification](docs/specification.md). This file
+tracks evidence, not aspirations marked as complete.
 
-## Goal
+## Working baseline
 
-Show an externally started Claude Code session and an externally started Codex
-session updating together in Aperture. Neither may be launched, resumed, or
-adopted by Aperture to make the demonstration work.
+Aperture passively reads Claude Code and Codex session files every two seconds,
+keeps bounded incremental cursors in memory, and displays both providers,
+activity, attention evidence, freshness, and integration health. It provides
+working-folder and transcript-folder navigation. The legacy HTTP listener and
+installer are not exposed by the baseline desktop.
 
-## Baseline
+Real Windows evidence establishes simultaneous external two-provider observation
+and unchanged provider settings. It does not establish complete permission
+attention, process liveness, or all hosts. See [Windows records](docs/validation/README.md).
 
-The existing Tauri/Rust/React prototype has a Claude hook listener, an in-memory
-state machine, manual/startup transcript scanning, and session cards. No Codex
-collector or repository identity resolution exists. Windows host detection and
-navigation are absent; macOS navigation is experimental.
+At consolidation, the frontend build/TypeScript and 14 Rust tests passed.
+These historical counts are superseded by the current
+[Windows follow-up](docs/validation/windows-compatibility-followup.md).
 
-During the preceding assessment, TypeScript checking, the frontend production
-build, and five Rust tests passed on Windows. This is build evidence, not proof
-of real host integration or macOS support. The frontend build passed after a
-sandbox access restriction was resolved.
+## Current goal
 
-## Work in order
+Close Windows host-identification and supported attention gaps while preserving
+passive discovery and external session ownership. Optional observational hooks
+may enrich fields missing from files, using explicit configuration and no agent
+decisions. No launching, resuming, prompting, stopping, or approval control.
 
-1. Fix the Claude installer before using real settings: reject malformed or
-   unreadable configuration, preserve unrelated handlers, match ownership
-   exactly, and back up and atomically replace changed files.
-2. Introduce provider-qualified session identity and a normalized event boundary.
-   Keep the Claude parser behind its adapter. Add provider badges and separate
-   integration health for Claude Code and Codex.
-3. Implement Codex lifecycle-hook collection against verified installed-version
-   schemas. Isolate Codex transcript parsing. App-server attachment to unrelated
-   running sessions is unproven; do not substitute Aperture-launched sessions.
-4. Capture sanitized real hook and transcript fixtures for both providers.
-   Record versions, configuration roots, event coverage, transcript locations,
-   and process ancestry. Do not commit private prompts or unsanitized logs.
-5. Demonstrate both providers together. Exercise prompts, tools, approval
-   waiting, continuation, completion, interruption, and termination where
-   supported. Unknown signals must produce explicit degraded/unknown state.
-6. Test every OS/host row below. Distinguish documented expectations from
-   observed behavior. Use sessions started both before and after Aperture.
-7. Probe navigation separately: exact session, app/window focus, folder, and
-   transcript reveal. Record the action actually achieved for each host.
+The owner has no Mac. The friend's [Mac handoff](docs/validation/macos-checklist.md)
+is a separate pending validation task. Windows work can proceed; complete
+cross-platform Phase 0 and production claims cannot precede that evidence.
 
-## Compatibility evidence
+## Evidence matrix
 
-Windows terminal baseline is Git Bash/PowerShell; macOS baseline is Terminal.app
-with zsh (not yet tested — see below). VS Code means the provider extension
-executing locally. Desktop means the local coding experience. "Host label"
-is what the observer itself can determine from files alone, independent of
-whether a human watching the OS could tell hosts apart.
+This baseline separates discovery from full live lifecycle validation.
+“Historical” does not mean a live attention test passed. See the follow-up report
+for additional evidence produced by the current implementation agent.
 
-| OS | Provider | Host | Events | Transcript discovery | Host label | Navigation | Evidence |
-|---|---|---|---|---|---|---|---|
-| Windows | Claude Code | Terminal | Verified | Verified | **Gap: Unknown** | Partial (open folder) | Real `claude -p` run + live dashboard, 2026-09-07. See below. |
-| Windows | Claude Code | VS Code | Verified | Verified | **Gap: Unknown** | Partial (open folder) | Real historical transcript, `entrypoint:"claude-vscode"`, 2026-07-24. See below. |
-| Windows | Claude Code | Desktop Code | Verified | Verified | **Gap: Unknown** | Partial (open folder) | Live dashboard screenshot of this session (Claude Desktop Code tab), 2026-09-06. See below. |
-| Windows | Codex | Terminal | Verified | Verified | Verified (`codex_exec`) | Partial (open folder) | Real `codex exec` run, session `01a07a06-712b-7d91-86eb-e4affbbca013`, 2026-09-07. See below. |
-| Windows | Codex | VS Code | Verified | Verified | Verified (`codex_vscode`) | Partial (open folder) | Real historical transcript, `originator:"codex_vscode"`. See below. |
-| Windows | Codex | Desktop | Verified | Verified | Verified (`Codex Desktop`) | Partial (open folder) | Real historical transcript, `originator:"Codex Desktop"`. See below. |
-| macOS | Claude Code | Terminal | Unverified | Unverified | Unverified | Unverified | Pending — needs a real Mac, see `docs/validation/macos-checklist.md` |
-| macOS | Claude Code | VS Code | Unverified | Unverified | Unverified | Unverified | Pending — see `docs/validation/macos-checklist.md` |
-| macOS | Claude Code | Desktop Code | Unverified | Unverified | Unverified | Unverified | Pending — see `docs/validation/macos-checklist.md` |
-| macOS | Codex | Terminal | Unverified | Unverified | Unverified | Unverified | Pending — see `docs/validation/macos-checklist.md` |
-| macOS | Codex | VS Code | Unverified | Unverified | Unverified | Unverified | Pending — see `docs/validation/macos-checklist.md` |
-| macOS | Codex | Desktop | Unverified | Unverified | Unverified | Unverified | Pending — see `docs/validation/macos-checklist.md` |
+| OS | Provider | Host | Discovery evidence at consolidation | Full live lifecycle/attention | Navigation |
+|---|---|---|---|---|---|
+| Windows | Claude Code | Interactive terminal | Non-interactive run recorded; interactive case not separately evidenced | Pending | Folder fallback implemented |
+| Windows | Claude Code | VS Code | Historical record reported | Pending | Folder fallback implemented |
+| Windows | Claude Code | Desktop Code | Live dashboard evidence reported | Full attention pending | Folder fallback implemented |
+| Windows | Codex | Interactive terminal | codex exec record reported; interactive TUI not separately evidenced | Pending | Folder fallback implemented |
+| Windows | Codex | VS Code | Historical record reported | Pending | Folder fallback implemented |
+| Windows | Codex | Desktop | Historical metadata and Windows two-provider trace; see record provenance | Full attention pending | Folder fallback implemented |
+| macOS | Claude Code | Interactive terminal | Pending friend validation | Pending | Pending real Finder check |
+| macOS | Claude Code | VS Code | Pending friend validation | Pending | Pending real Finder check |
+| macOS | Claude Code | Desktop Code | Pending friend validation | Pending | Pending real Finder check |
+| macOS | Codex | Interactive terminal | Pending friend validation | Pending | Pending real Finder check |
+| macOS | Codex | VS Code | Pending friend validation | Pending | Pending real Finder check |
+| macOS | Codex | Desktop | Pending friend validation | Pending | Pending real Finder check |
 
-**What "Verified" means here, precisely:** the passive poller correctly reads
-real, unmodified session files from that host and derives a plausible
-lifecycle status from them. It does not mean Aperture can tell a human which
-host a Claude Code session came from (see the Host label gap below), and it
-does not mean exact-window navigation works (see Navigation).
+No exact-session/window/tab navigation has been verified by this matrix. Folder
+fallback implementation and helper unit tests are not evidence of native Mac
+navigation. A headless/non-interactive run does not substitute for interactive
+CLI validation.
 
-**Host label gap for Claude Code:** Codex's own transcript self-reports which
-host started it (`session_meta.payload.originator`/`source`: `"Codex Desktop"`,
-`"codex_vscode"`, `"codex_exec"` — all three confirmed against real files on
-this machine and now used by `passive.rs`/`infer_codex_host`). Claude Code's
-transcript carries no equivalent field: the only place Claude Code reports its
-`entrypoint` (`cli` / `claude-vscode` / `claude-desktop`, also confirmed real)
-is in the JSON it sends live to hooks at `SessionStart`, not in anything
-persisted to `~/.claude/projects/*.jsonl`. This is a real, structural
-limitation of passive-only observation, not a bug: closing it requires the
-hook channel (`hooks_installer.rs`/`listener.rs`, present in the repo but not
-wired into the desktop's passive store) to capture `entrypoint` once at
-session start and merge it into the same session record by ID. That is
-tracked as the next concrete step for Phase 0/1, not done in this pass.
+## Corrections to earlier assumptions
 
-**Interactive Codex terminal not separately confirmed:** the Terminal row
-above used `codex exec` (non-interactive). The interactive `codex` TUI in a
-plain terminal was not run separately to confirm it reports the same
-`codex_exec` originator; treat that specific case as inferred, not verified.
+- The earlier statement that Claude transcripts never expose host metadata was
+  too broad. The current follow-up found entrypoint fields in real local
+  records. Parse only evidenced values and retain unknown for missing/unrecognized
+  metadata; do not treat an arbitrary string as a known host.
+- The earlier claim that Codex has no external permission-request channel
+  conflated legacy notify behavior with the lifecycle hooks interface.
+  [Official Codex hooks](https://learn.chatgpt.com/docs/hooks) describe
+  PermissionRequest. Its availability and coverage in each installed host/version
+  still require real tests. This is an unresolved integration check, not proof
+  that full cross-host approval observation is impossible.
+- Recorded file-based activity is useful evidence but cannot establish every
+  lifecycle transition, concurrent question resolution, or current process liveness.
+- Neither the file-reader approach nor hook transport is the product itself.
+  Keep passive discovery; enrich only missing signals with observational behavior.
 
-**Permission-prompt attention is an explicit, currently unclosable gap for
-both providers under passive observation:**
-- Claude Code: real hook events (`PermissionRequest`/`Notification`) exist
-  and are already implemented in `hooks_installer.rs`/`state.rs`, but are not
-  wired into the desktop app's passive store in this pass.
-- Codex: confirmed via Codex's own docs and `~/.codex/config.toml` that the
-  external `notify` hook fires only on `agent-turn-complete`, never on
-  `approval-requested` (the only other defined notify event name). Approval
-  prompts otherwise only reach a local OS/TUI notification
-  (`[tui] notifications = ["approval-requested"]`), which nothing outside the
-  terminal process can observe. There is currently no supported, external,
-  cross-host way for Aperture to see a Codex approval prompt. This is a
-  provider limitation, not a missing Aperture feature — do not build a
-  workaround that assumes a signal Codex does not emit.
+## Immediate implementation checklist
 
-**Navigation, honestly:** only "open the session's working directory" and
-"reveal the transcript's folder" are implemented
-(`open_session_folder`/`reveal_transcript` in `commands.rs`), using the OS
-file manager. Exact-session focus, window/tab focus, and provider URL scheme
-navigation are not implemented for any host on any OS.
+1. Preserve the passive Windows baseline and sanitized fixtures.
+2. Improve provider host mapping from real metadata without process-name guesses.
+3. Add optional sanitized local hook enrichment; print merge instructions rather
+   than automatically changing settings. Do not enable the unsafe legacy installer.
+4. Merge by provider/session with ordered attention handling, stale/history rules,
+   and child-event isolation. Test malformed/oversized events and app-off behavior.
+5. Build/test and capture any available real external activity without controlling
+   user sessions. List manual host/permission tests that remain pending.
+6. Give the Mac tester the exact committed revision and reproducible checklist.
+7. Update evidence and capability labels from observed outcomes, not task status.
 
-Each row needs version/date, reproducible steps, fixture references, observed
-results, and limitations. Builds and synthetic POSTs cannot mark a real
-integration passed. Failure blocks the support claim and does not silently
-remove the provider/platform from requirements.
+## Exit gate for complete Phase 0
 
-## Exit gate
+- Both externally started providers remain distinguishable and observable.
+- Required lifecycle/attention checks have real evidence for all 12 combinations,
+  with documented versions and known missing capabilities.
+- Missing signals remain explicit unknown; failures do not change agent decisions.
+- Configuration preservation and event-normalization regression checks pass.
+- Navigation fallback capabilities are labeled accurately and tested per OS.
+- Mac rows cannot pass on Windows or from CI builds alone.
 
-- Both externally started providers appear with distinct identities.
-- Core lifecycle transitions have real evidence for all 12 combinations, with
-  unsupported signals and navigation limitations explicitly recorded.
-- Closed Aperture or collection failure never approves, denies, or stops work.
-- Installer preservation and normalized event tests pass.
-- Real fixtures establish discovery/schema assumptions for Phase 1.
-- Required host observation remains a blocker until proven.
-
-Later phases: reliable collection/recovery; repositories/worktrees/navigation;
-daily-use desktop beta; production ready state. Their deliverables and gates
-are in the specification. No phase is complete merely because it is documented.
+Documentation and the Windows subgoal can finish while this full-phase gate
+remains open. Subsequent phases cover durable recovery, Git/worktree organization,
+daily-use desktop beta, and production ready state.

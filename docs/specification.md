@@ -1,55 +1,68 @@
 # Aperture detailed specification and implementation phases
 
-Status: proposed implementation contract for the agreed product requirements.
-No implementation phase is marked complete by this document.
+Status: target implementation contract, reviewed 2026-09-07. Detailed contracts
+below are planned unless the current-state table or a dated validation report
+explicitly proves implementation. No whole phase is complete yet.
 
-[Requirements](requirements.md) define the product scope.
-[Phase 0](../SPIKE.md) holds the immediate checklist and compatibility evidence.
-If an integration experiment contradicts this design, record the evidence and
-amend the adapter design; do not quietly narrow the requirements.
+[Product vision](product-vision.md) is the central intent source.
+[Requirements](requirements.md) define acceptance; [goals](goals.md) tracks current
+assignments. [Phase 0](../SPIKE.md) records compatibility coverage and limitations.
+Revise implementation choices when evidence changes; preserve the product scope.
 
 ## 1. Current state and design delta
 
-The current application uses Tauri 2, Rust, Tokio/Axum, React 18, and TypeScript.
-Retain this stack. The observer core is already separate from the Tauri bridge,
-which makes provider adapters possible without replacing the desktop shell.
+Retain Tauri 2, Rust, React 18, and TypeScript. The implemented baseline is passive
+file observation for both providers, not the original HTTP/hook spike.
 
-| Area | Current evidence from source | Required change |
+| Area | Audited baseline at 9df871d | Remaining target |
 |---|---|---|
-| Ingestion | Claude-specific POST /hook and shell/cmd wrappers | Provider-specific parsing behind a shared event contract |
-| Identity | Store indexed by raw session_id | Provider-qualified identity; optional parent identity |
-| Configuration | One hooks_installed boolean; marker substring matching | Independent integration health and safe per-provider installation |
-| Status | live stays true after any hook; no reconciliation | Separate activity state, observation freshness, and process evidence |
-| History | Whole-file startup/manual Claude scan; memory-only state | Provider discovery, incremental reading, durable summaries and cursors |
-| Git | repo_root exists but is never populated | Repository/worktree identity derived from Git |
-| Navigation | Experimental AppleScript; Windows returns text | Verified per-host actions with structured results |
-| UI | Cards, permission strip, full snapshots | Mixed-provider grouping, broader attention, filters, details, health |
-| Verification | Five Rust tests; TypeScript/build passed in prior assessment | Real compatibility fixtures, OS smoke tests, failure and release checks |
+| Ingestion | Two-second polling and bounded incremental JSONL reads for both providers | Optional attention enrichment; watcher/reconciliation and durable cursors |
+| Identity | Provider-qualified IDs in passive adapters | Strong shared types, child identity and concurrent request tracking |
+| Configuration | Passive roots via environment; no automatic settings writes | Safe explicit enrichment setup; eventual per-provider repair UI |
+| Status | Recent/stale/history-only; process liveness unknown | Session-specific reconciliation and trustworthy attention |
+| History | In-memory summaries/cursors; replay after restart | SQLite summaries, migrations, retention and recoverable cursors |
+| Git | repo_root still unresolved; UI groups by cwd | Real repository/worktree identity |
+| Navigation | Open working folder or transcript-containing folder | Validated destinations, errors, structured outcomes and optional exact focus |
+| UI | Both providers, attention, freshness, health; revised subscription cleanup | Filters/details, accessibility, notifications and daily-use polish |
+| Verification | Windows file-growth evidence and 14 Rust tests at consolidation | Live per-host attention evidence, Mac runs and release gates |
 
-Known correctness issues to address: malformed settings can be replaced by an
-empty object; matching one Aperture handler can remove a whole mixed hook group;
-the health label can claim listening after bind failure; hook counts and
-transcript counts disagree; current error-detail parsing does not match the
-documented Claude string error; child-agent events can affect parent state;
-frontend initial fetch and subscription can race and asynchronous cleanup can
-leak listeners. Historical scans do not prove live status. These are code
-findings, not reports of a completed end-to-end test.
+The current Windows follow-up is recorded in
+[windows-compatibility-followup.md](validation/windows-compatibility-followup.md).
+Use that report for subsequent changes and test counts. The baseline above
+does not claim that this follow-up is complete.
+
+Dormant legacy hook code is not registered by the baseline desktop. Its unsafe
+settings parser/group removal and raw-ID reducer must not be re-enabled without
+repair. The passive implementation avoids provider settings writes; that is not
+proof the legacy installer is safe. Historical scans do not prove liveness.
+Counts and title fixes in the legacy transcript reader do not automatically
+apply to the passive UI. Some prior hook-only and host-field assumptions were
+too broad; verify actual installed-version payloads.
+
+The owner has no Mac. A friend will execute the
+[Mac handoff](validation/macos-checklist.md). Windows implementation and test
+preparation can continue while this is pending. macOS CI may check builds/tests,
+but real host validation remains a cross-platform phase/release gate.
 
 ## 2. Architecture and ownership
 
-Flow: provider hook -> local collector -> provider adapter -> normalized event
-queue -> session reducer and storage -> Tauri snapshot -> dashboard.
+Implemented baseline: provider discovery -> incremental file adapter -> shared
+in-memory store -> Tauri snapshot -> desktop dashboard.
 
-Historical flow: provider discovery -> incremental transcript parser -> metadata
-and usage reconciliation -> same storage and dashboard.
+Current enrichment direction: explicitly configured provider hook -> small
+observational helper -> sanitized local Aperture inbox -> shared reducer.
+Passive discovery remains available with no hooks. Do not treat file discovery,
+optional hook coverage, and verified process liveness as the same capability.
 
-Supporting services: read-only Git resolver, process/host resolver, native
-navigation, integration configuration, and diagnostics.
+Production target: durable storage and incremental reconciliation behind the
+same desktop contract, plus read-only Git identity, verified navigation, and
+diagnostics. Planned HTTP transport below is an alternative, not a prerequisite
+for the local inbox or passive collector.
 
-Use one local observer owned by the desktop process. Closing the window hides
-it to the tray/menu bar after onboarding explains this behavior; explicit Quit
-stops observation. Do not introduce a privileged OS service. Enforce one app
-instance so two windows cannot compete for the listener or database.
+Use one local observer owned by the desktop process. Tray/menu-bar behavior and
+single-instance enforcement remain planned: hide on window close after explaining
+it during onboarding; explicit Quit stops collection. Do not add a privileged
+service. None of these features should own the agent processes.
 
 ### Provider adapters
 
@@ -64,11 +77,13 @@ The shared reducer must never switch on raw provider hook names. Use explicit
 provider values claude_code and codex, independent of model names or API vendors.
 Keep extension points small; a general plugin SDK is outside this release.
 
-For Phase 0, retain command-hook forwarding and add a small packaged Rust
-forwarder executable to replace brittle JSON splicing and shell assumptions.
-It reads stdin JSON, attaches provider/source identity and bounded process
-metadata, posts to loopback, emits no stdout, and exits successfully even when
-delivery fails. Use an absolute executable path with provider-supported argument
+For the Windows follow-up, add a small Rust helper that reads hook JSON,
+retains only observation metadata, writes to an Aperture-owned local inbox,
+emits no decision output, and exits successfully on collection failure.
+Configuration is printed for explicit manual merging; it must not replace
+existing provider settings. A future packaged installer must satisfy the
+configuration-safety contract below before it becomes an enabled feature.
+Use an absolute executable path with provider-supported argument
 encoding. Validate paths containing spaces, Unicode, and shell metacharacters.
 Do not assume the immediate parent PID is the agent; resolve ancestry and record
 unknown when identity cannot be proved. Never collect the full environment or
@@ -80,6 +95,15 @@ observation is an optional adapter experiment, not a machine-wide discovery
 assumption and not a reason to resume an external session.
 
 ### Local ingestion
+
+The current enrichment uses an Aperture-owned inbox with bounded record/file
+handling. Never copy prompt text, tool inputs/outputs, reasoning, credentials, or
+the full hook payload into it. Ignore malformed/oversized records, do not replay
+old events as current activity, and report unavailable observation honestly.
+See the Windows follow-up for implemented paths, limits, commands, and evidence.
+
+The following HTTP design is a **future alternative** if justified by measured
+latency or integration needs. It is not currently required or exposed.
 
 Use versioned routes POST /v1/events/claude-code and POST /v1/events/codex.
 Keep GET /health free of session content. Migrate the prototype /hook registration
@@ -101,8 +125,9 @@ uncertain state instead of promising complete event capture while the app is off
 
 ### Configuration safety
 
-The integration screen has separate Claude and Codex enable/repair/remove
-actions. Installation is an explicit user action; startup never edits provider
+The target integration screen has separate Claude and Codex enable/repair/remove
+actions; the current helper's configuration-printing workflow is not this UI.
+Installation is an explicit user action; startup never edits provider
 configuration automatically. Detect non-default roots and permit an explicit
 root override per provider. Do not scan arbitrary directories or credentials.
 
@@ -178,9 +203,11 @@ use idempotent state updates and transcript reconciliation. Reject known older
 turn/sequence updates; where order cannot be established, downgrade conflicting
 status to unknown and reconcile. Never claim guaranteed ordering across providers.
 
-Hooks establish observed activity. Transcripts establish historical metadata and
-counts only after adapter validation; a file scan cannot overwrite newer live
-status. Null means unavailable, not zero. Show usage only with provider-specific
+Verified new transcript appends and supported hooks can establish observed
+activity. Historical replay establishes metadata/counts only after adapter
+validation; it cannot overwrite newer observation status. Missing approval
+records in a transcript cannot clear hook-observed attention without evidence.
+Null means unavailable, not zero. Show usage only with provider-specific
 provenance; do not present tokens as comparable billing totals or USD.
 
 ### Freshness and recovery
@@ -240,10 +267,11 @@ intact and offer recovery rather than silently creating an empty replacement.
 
 ### IPC and UI updates
 
-Replace unqualified install/uninstall commands with provider-scoped integration
-commands. Rescan takes an optional provider and reports progress/partial errors.
-Session and navigation commands take SessionKey, not a bare native ID. Replace
-forget_session with persistent hide_session; use navigate_session(key, action)
+Add provider-scoped integration commands when automated setup is implemented;
+the dormant legacy installer is not an active API to reuse. Extend rescan with
+an optional provider and progress/partial errors. Session and navigation commands
+take SessionKey, not a bare native ID. Add persistent hide_session (no active
+forget command currently exists); use navigate_session(key, action)
 for explicit navigation. These are internal breaking changes; no external API
 compatibility promise exists for the current prototype.
 
@@ -287,14 +315,17 @@ motion, OS scaling, and the existing minimum window dimensions.
 
 ## 5. Implementation phases
 
-Phases are ordered by dependencies, not promised calendar dates. Documentation
-completion does not imply Phase 0 implementation has started.
+Phases are ordered by dependencies, not calendar promises. Phase 0 has a
+validated Windows passive milestone and an active Windows follow-up; Mac runtime
+validation remains externally pending. Later Windows engineering may proceed
+without representing Phase 0 or the cross-platform release as complete.
 
 ### Phase 0 — Right now: two-provider compatibility proof
 
-Deliver: installer safety prerequisite, provider-qualified identity, normalized
-boundary, Codex hook collector, provider badges/health, sanitized real fixtures,
-and the 12-row compatibility matrix in SPIKE.md. Validate event mapping,
+Deliver: passive two-provider baseline, provider-qualified identity, normalized
+boundary, optional safe hook enrichment for supported missing signals,
+provider badges/health, sanitized real fixtures, and the 12-row matrix in SPIKE.md.
+Do not expose the dormant installer; require safety before any automated setup. Validate event mapping,
 discovery, process attribution, and navigation capabilities before relying on
 them in later phases.
 
@@ -307,13 +338,14 @@ fall back. This phase does not claim durable history or production reliability.
 
 ### Phase 1 — Reliable collection and recovery
 
-Deliver: authenticated bounded ingestion, packaged forwarder, idempotent reducer,
+Deliver: bounded trusted local ingestion, packaged observational helper, idempotent reducer,
 child/request handling, SQLite/migrations, incremental history readers for both
-providers, freshness reconciliation, integration repair, and listener/scan health.
+providers, freshness reconciliation, integration repair, and collector/scan health.
 Complete the IPC revision/subscription changes.
 
 Exit: restart, interrupted file writes, duplicate/delayed events, disabled hooks,
-port collision, process exit/reuse, and sleep/wake tests pass. No stale session
+inbox bounds/corruption, process exit/reuse, and sleep/wake tests pass. If HTTP is
+introduced, also verify authentication and port collision. No stale session
 is reported as confirmed working without evidence. Counts survive reconciliation
 without hook/transcript double counting. Provider configuration remains intact
 through repeated install/repair/remove and concurrent edits.
@@ -366,7 +398,7 @@ unrelated settings. Publish artifacts only after these gates are recorded.
 | Adapter fixtures | Real sanitized Claude/Codex payloads; unknown fields/events; errors; permission/input; interruption; child lifecycle; recorded provider versions |
 | Identity/reducer | Same native ID across providers; resume/fork; two sessions in one cwd; stale/duplicate/out-of-order events; child completion; multiple pending requests |
 | Installer | Missing/malformed/unreadable JSON/TOML; mixed handlers; similarly named unrelated commands; repeat install; concurrent edits; backup collision; explicit removal |
-| Ingestion | Invalid token/schema/body size; queue overflow; port occupied; app closed; one provider unavailable while the other works; no decision output |
+| Ingestion | Invalid schema/body size; local inbox bounds/ownership/corruption; app closed; one provider unavailable while the other works; no decision output; token/port/HTTP queue checks only if HTTP transport is introduced |
 | Historical recovery | Partial JSONL, rotation/truncation, missing files, different roots, duplicate usage records, interrupted migration, restart and hidden-session persistence |
 | Git/navigation | Linked worktrees, subdirectories, separate clones, detached HEAD, no Git, Unicode/space paths, deleted paths, stale PID, OS focus denial, truthful fallback labels |
 | UI/lifecycle | Snapshot race/cleanup, attention ordering, filters, empty/partial states, notifications, hide/restore, tray/quit, keyboard/scaling/reduced motion |
