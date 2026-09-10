@@ -27,8 +27,28 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     observer.poll(store);
     let sessions = store.snapshot().sessions;
     let cursors = observer.export_cursors();
-    let _ = db.save_summaries(&sessions);
-    let _ = db.save_cursors(&cursors);
+    let summaries_ok = db.save_summaries(&sessions).is_ok();
+    let cursors_ok = db.save_cursors(&cursors).is_ok();
+    store.integrations.push(storage_health(summaries_ok && cursors_ok));
+}
+
+/// Synthetic health row reporting whether SQLite persistence succeeded on
+/// the last write cycle. `Observer::poll` has no reference to `Db` and
+/// cannot know this; only this function, which actually calls
+/// `db.save_summaries`/`db.save_cursors`, can.
+fn storage_health(ok: bool) -> crate::observer::model::IntegrationHealth {
+    crate::observer::model::IntegrationHealth {
+        provider: "storage".into(),
+        state: if ok { "ok" } else { "degraded" }.into(),
+        root: crate::observer::db::data_dir().to_string_lossy().into_owned(),
+        files: 0,
+        last_event_at: None,
+        detail: if ok {
+            "SQLite persistence writing normally.".into()
+        } else {
+            "SQLite write failed this cycle; running in-memory only until it recovers.".into()
+        },
+    }
 }
 
 #[tauri::command]
@@ -133,6 +153,29 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_and_persist_reports_storage_health() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!("aperture-storage-health-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        let db = Db::in_memory();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "ok");
+        assert!(storage.detail.contains("SQLite"));
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
