@@ -174,6 +174,21 @@ impl Store {
         self.sessions.remove(id);
         self.revision += 1;
     }
+
+    /// Seed the store from persisted history on startup. Never trust a
+    /// persisted `live` claim: force it false and downgrade a "recent"
+    /// observation to "stale" so nothing is presented as currently live
+    /// before the first post-restart reconcile.
+    pub fn restore_summaries(&mut self, sessions: Vec<Session>) {
+        for mut s in sessions {
+            s.live = false;
+            if s.observation == "recent" {
+                s.observation = "stale".into();
+            }
+            self.sessions.insert(s.id.clone(), s);
+        }
+        self.revision += 1;
+    }
 }
 
 fn rank(s: SessionStatus) -> u8 {
@@ -250,5 +265,25 @@ mod tests {
             r#","notification_type":"permission_prompt""#,
         ));
         assert_eq!(st.snapshot().sessions[0].id, "b");
+    }
+
+    #[test]
+    fn restore_forces_live_false_and_downgrades_recent_to_stale() {
+        let mut st = Store::default();
+        let mut recent = Session::new("claude_code:a".into(), "/repo".into(), Utc::now());
+        recent.live = true;
+        recent.observation = "recent".into();
+        let mut history = Session::new("codex:b".into(), "/repo".into(), Utc::now());
+        history.live = true; // a persisted bug/edge case; must still be forced false
+        history.observation = "history_only".into();
+
+        st.restore_summaries(vec![recent, history]);
+
+        let a = &st.sessions["claude_code:a"];
+        assert!(!a.live);
+        assert_eq!(a.observation, "stale");
+        let b = &st.sessions["codex:b"];
+        assert!(!b.live);
+        assert_eq!(b.observation, "history_only");
     }
 }
