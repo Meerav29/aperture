@@ -81,6 +81,28 @@ fn restart_resumes_cursors_without_duplicating_or_losing_sessions() {
         snap.sessions[0].id, "claude_code:restart-1",
         "the same provider-qualified id must be reused across restart"
     );
+    // This is the assertion that actually distinguishes "cursor was resumed
+    // from the saved offset" from "cursor plumbing is broken and the file
+    // was re-scanned from zero". Both scenarios converge on the same final
+    // byte offset and session count, so neither of those alone proves
+    // anything. But `live`/`observation` diverge: `live` requires
+    // `cursor.offset > cursor.initial_len` (passive.rs::apply), and
+    // `initial_len` is only correctly anchored at the pre-restart file
+    // length when `restore_cursors` actually restored the saved cursor. If
+    // restore were a no-op, this poll would treat the file as newly
+    // discovered, set `initial_len` to the current (post-append) length,
+    // and nothing read here would ever count as "appended" — so `live`
+    // would be `false` and `observation` would stay `"history_only"`.
+    assert!(
+        snap.sessions[0].live,
+        "cursor must have resumed from the saved offset: the post-restart \
+         poll only reads the newly-appended assistant line, which must be \
+         seen as a live append, not a first-ever read of the whole file"
+    );
+    assert_eq!(
+        snap.sessions[0].observation, "recent",
+        "cursor must have resumed from the saved offset (see live assertion above)"
+    );
 
     let cursors_after = observer.export_cursors();
     assert_eq!(cursors_after.len(), 1);
