@@ -108,6 +108,59 @@ impl Observer {
         }
         store.revision += 1;
     }
+
+    /// Provider transcript roots, for the filesystem watcher to subscribe to.
+    pub fn watch_roots(&self) -> Vec<PathBuf> {
+        self.roots.iter().map(|(_, p)| p.clone()).collect()
+    }
+
+    /// Seed cursors from persisted state (Task 1's `db::CursorRecord`), so
+    /// tailing resumes at the saved byte offset instead of re-reading a file
+    /// from the start after a restart.
+    pub fn restore_cursors(&mut self, records: Vec<super::db::CursorRecord>) {
+        for r in records {
+            self.cursors.insert(
+                PathBuf::from(&r.path),
+                Cursor {
+                    offset: r.offset,
+                    initial_len: r.initial_len,
+                    malformed: r.malformed as usize,
+                    id: r.session_id,
+                    host: r.host.as_deref().map(host_from_str),
+                    created: r
+                        .created_ns
+                        .map(|ns| std::time::UNIX_EPOCH + std::time::Duration::from_nanos(ns as u64)),
+                },
+            );
+        }
+    }
+
+    /// Export current cursor state for persistence.
+    pub fn export_cursors(&self) -> Vec<super::db::CursorRecord> {
+        self.cursors
+            .iter()
+            .map(|(path, c)| super::db::CursorRecord {
+                path: path.to_string_lossy().into_owned(),
+                provider: self.provider_for(path).unwrap_or_default(),
+                offset: c.offset,
+                initial_len: c.initial_len,
+                malformed: c.malformed as u64,
+                session_id: c.id.clone(),
+                host: c.host.map(host_to_str),
+                created_ns: c
+                    .created
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos() as i64),
+            })
+            .collect()
+    }
+
+    fn provider_for(&self, path: &Path) -> Option<String> {
+        self.roots
+            .iter()
+            .find(|(_, root)| path.starts_with(root))
+            .map(|(p, _)| p.clone())
+    }
 }
 
 fn discover(root: &Path, out: &mut Vec<PathBuf>, errors: &mut usize, depth: usize) {
@@ -380,6 +433,17 @@ fn safe_name(name: Option<&str>) -> String {
         .filter(|c| !c.is_control())
         .take(80)
         .collect()
+}
+
+fn host_to_str(h: Host) -> String {
+    match serde_json::to_value(h) {
+        Ok(Value::String(s)) => s,
+        _ => "unknown".into(),
+    }
+}
+
+fn host_from_str(s: &str) -> Host {
+    serde_json::from_value(Value::String(s.into())).unwrap_or(Host::Unknown)
 }
 
 fn apply(store: &mut Store, provider: &str, path: &Path, event: Event, appended: bool) {
@@ -691,5 +755,48 @@ mod tests {
         );
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn cursor_export_then_restore_round_trips_and_resumes_tailing() {
+        let root = std::env::temp_dir().join(format!("aperture-cursor-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("test.jsonl");
+        let line = json!({"type":"user","sessionId":"resume","timestamp":Utc::now().to_rfc3339(),"message":{"content":"hi"}}).to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let mut first = Observer::new(root.clone(), root.join("codex-unused"));
+        let mut store = Store::default();
+        first.poll(&mut store);
+        assert_eq!(store.sessions.len(), 1);
+        let exported = first.export_cursors();
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].provider, "claude_code");
+        assert!(exported[0].offset > 0);
+
+        // A fresh Observer, as after a restart, resumes from the exported
+        // cursor instead of re-reading from byte zero.
+        let mut second = Observer::new(root.clone(), root.join("codex-unused"));
+        second.restore_cursors(exported.clone());
+        let mut second_store = Store::default();
+        second.poll(&mut second_store);
+        // No new lines were appended, so re-polling must not re-apply the
+        // already-ingested line as a fresh event / duplicate session entry.
+        assert_eq!(second_store.sessions.len(), 0);
+
+        let still = second.export_cursors();
+        assert_eq!(still[0].offset, exported[0].offset);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn watch_roots_returns_configured_provider_directories() {
+        let claude = std::env::temp_dir().join("aperture-watch-claude");
+        let codex = std::env::temp_dir().join("aperture-watch-codex");
+        let observer = Observer::new(claude.clone(), codex.clone());
+        let roots = observer.watch_roots();
+        assert_eq!(roots, vec![claude, codex]);
     }
 }
