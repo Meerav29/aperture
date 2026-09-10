@@ -1,4 +1,5 @@
 use crate::observer::{
+    db::Db,
     model::{Session, Snapshot},
     passive::Observer,
     state::Store,
@@ -11,11 +12,25 @@ use tokio::sync::Mutex;
 pub struct Shared {
     pub store: Arc<Mutex<Store>>,
     pub observer: Arc<StdMutex<Observer>>,
+    pub db: Arc<Db>,
 }
 pub const SNAPSHOT_EVENT: &str = "sessions:snapshot";
 pub async fn push_snapshot(app: &AppHandle, store: &Arc<Mutex<Store>>) {
     let _ = app.emit(SNAPSHOT_EVENT, store.lock().await.snapshot());
 }
+
+/// Poll for new activity, then persist the resulting summaries and cursors.
+/// This is the single write path into SQLite — called from `lib.rs`'s
+/// reconcile loop and from the manual `rescan_transcripts` command, always
+/// from inside a `spawn_blocking` closure holding both locks.
+pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db) {
+    observer.poll(store);
+    let sessions = store.snapshot().sessions;
+    let cursors = observer.export_cursors();
+    let _ = db.save_summaries(&sessions);
+    let _ = db.save_cursors(&cursors);
+}
+
 #[tauri::command]
 pub async fn get_snapshot(shared: State<'_, Shared>) -> Result<Snapshot, String> {
     Ok(shared.store.lock().await.snapshot())
@@ -27,11 +42,11 @@ pub async fn rescan_transcripts(
 ) -> Result<usize, String> {
     let observer = shared.observer.clone();
     let store = shared.store.clone();
+    let db = shared.db.clone();
     tokio::task::spawn_blocking(move || {
-        observer
-            .lock()
-            .map_err(|e| e.to_string())?
-            .poll(&mut store.blocking_lock());
+        let mut observer_guard = observer.lock().map_err(|e| e.to_string())?;
+        let mut store_guard = store.blocking_lock();
+        reconcile_and_persist(&mut observer_guard, &mut store_guard, &db);
         Ok::<_, String>(())
     })
     .await
@@ -85,7 +100,40 @@ fn transcript_dir(s: &Session) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observer::passive::Observer;
     use chrono::Utc;
+
+    #[test]
+    fn reconcile_and_persist_polls_and_writes_summaries_and_cursors_to_the_db() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!("aperture-reconcile-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("s.jsonl");
+        let line = serde_json::json!({
+            "type":"user","sessionId":"r1","timestamp":Utc::now().to_rfc3339(),
+            "message":{"content":"hi"}
+        })
+        .to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let mut observer = Observer::new(root.clone(), root.join("codex-unused"));
+        let mut store = Store::default();
+        let db = Db::in_memory();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        assert_eq!(store.snapshot().sessions.len(), 1);
+        let persisted = db.load_summaries().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, "claude_code:r1");
+        let cursors = db.load_cursors().unwrap();
+        assert_eq!(cursors.len(), 1);
+        assert!(cursors[0].offset > 0);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
 
     #[test]
     fn find_session_looks_up_by_id_not_native_id() {
