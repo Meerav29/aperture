@@ -11,3 +11,4 @@ pub mod model;
 pub mod passive;
 pub mod state;
 pub mod transcript;
+pub mod watch;
