@@ -72,6 +72,7 @@ pub fn run() {
 
                 let (tx, mut watch_rx) = mpsc::unbounded_channel();
                 let roots = observer.lock().expect("observer lock").watch_roots();
+                // RAII guard: must stay alive for the loop's lifetime, or file-change notifications stop.
                 let _watcher = watch::watch(&roots, tx);
 
                 let mut interval =

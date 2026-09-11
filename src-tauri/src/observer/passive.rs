@@ -95,7 +95,7 @@ impl Observer {
         for integration in &mut store.integrations {
             let last_hook = store.hook_activity.get(&integration.provider);
             integration.detail = format!(
-                "Read-only files; 2s polling. Optional hook metadata: {}. Permission requests are observations, not proof a dialog remains open. Process liveness unknown. {hook_errors} hook inbox errors. Provider settings untouched.",
+                "Read-only files; debounced file watching, 5s reconcile. Optional hook metadata: {}. Permission requests are observations, not proof a dialog remains open. Process liveness unknown. {hook_errors} hook inbox errors. Provider settings untouched.",
                 last_hook.map(|at| format!("last received {}", at.to_rfc3339())).unwrap_or_else(|| "not observed; permission coverage unknown".into())
             ) + &format!(" {}", integration.detail);
             if hook_errors > 0 {

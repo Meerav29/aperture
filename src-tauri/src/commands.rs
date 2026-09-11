@@ -29,25 +29,40 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     let cursors = observer.export_cursors();
     let summaries_ok = db.save_summaries(&sessions).is_ok();
     let cursors_ok = db.save_cursors(&cursors).is_ok();
-    store.integrations.push(storage_health(summaries_ok && cursors_ok));
+    store
+        .integrations
+        .push(storage_health(db, summaries_ok && cursors_ok));
 }
 
 /// Synthetic health row reporting whether SQLite persistence succeeded on
 /// the last write cycle. `Observer::poll` has no reference to `Db` and
 /// cannot know this; only this function, which actually calls
 /// `db.save_summaries`/`db.save_cursors`, can.
-fn storage_health(ok: bool) -> crate::observer::model::IntegrationHealth {
+///
+/// Distinguishes three states: writes succeeded against a durable,
+/// file-backed `Db` (`"ok"`); a durable `Db` had a write fail this cycle
+/// (`"degraded"`, save failure detail); or `db` is in-memory-only, e.g.
+/// because `lib.rs` fell back to `Db::in_memory()` after `Db::open` failed
+/// (`"degraded"`, in-memory detail) — in that last case saves always
+/// succeed against the in-memory connection, so `ok` alone can't tell this
+/// case apart from real persistence.
+fn storage_health(db: &Db, ok: bool) -> crate::observer::model::IntegrationHealth {
+    let durable = db.is_durable();
+    let state = if durable && ok { "ok" } else { "degraded" };
+    let detail = if !durable {
+        "in-memory only: database unavailable, history will not survive a restart.".to_string()
+    } else if ok {
+        "SQLite persistence writing normally.".to_string()
+    } else {
+        "SQLite write failed this cycle; running in-memory only until it recovers.".to_string()
+    };
     crate::observer::model::IntegrationHealth {
         provider: "storage".into(),
-        state: if ok { "ok" } else { "degraded" }.into(),
+        state: state.into(),
         root: crate::observer::db::data_dir().to_string_lossy().into_owned(),
         files: 0,
         last_event_at: None,
-        detail: if ok {
-            "SQLite persistence writing normally.".into()
-        } else {
-            "SQLite write failed this cycle; running in-memory only until it recovers.".into()
-        },
+        detail,
     }
 }
 
@@ -156,10 +171,45 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_and_persist_reports_storage_health() {
+    fn reconcile_and_persist_reports_storage_health_ok_when_durable() {
         use crate::observer::db::Db;
 
         let root = std::env::temp_dir().join(format!("aperture-storage-health-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        // A real, file-backed Db (not Db::in_memory()) is required here:
+        // storage_health now reports "ok" only when persistence is both
+        // durable and the last write succeeded.
+        let db = Db::open(&root.join("health.db")).unwrap();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "ok");
+        assert!(storage.detail.contains("SQLite"));
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_and_persist_reports_storage_health_degraded_when_in_memory_fallback() {
+        use crate::observer::db::Db;
+
+        // Mirrors lib.rs's fallback path: when Db::open fails, the app
+        // continues with Db::in_memory() rather than crashing. Writes
+        // against that in-memory Db always succeed, so storage_health must
+        // rely on Db::is_durable() (not just the save result) to catch this
+        // and report "degraded" rather than misleadingly report "ok".
+        let root = std::env::temp_dir().join(format!(
+            "aperture-storage-health-inmem-{}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&root).unwrap();
         let mut observer = Observer::new(root.join("claude"), root.join("codex"));
         let mut store = Store::default();
@@ -172,8 +222,12 @@ mod tests {
             .iter()
             .find(|h| h.provider == "storage")
             .expect("a storage health row must be present");
-        assert_eq!(storage.state, "ok");
-        assert!(storage.detail.contains("SQLite"));
+        assert_eq!(storage.state, "degraded");
+        assert!(
+            storage.detail.contains("in-memory"),
+            "expected in-memory detail, got: {}",
+            storage.detail
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

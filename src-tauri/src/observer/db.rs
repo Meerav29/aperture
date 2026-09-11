@@ -24,6 +24,13 @@ pub struct CursorRecord {
 
 pub struct Db {
     conn: Mutex<Connection>,
+    /// The on-disk path this `Db` was opened against, or `None` when backed
+    /// by an in-memory connection (either `Db::in_memory()` directly, or
+    /// `lib.rs`'s fallback after `Db::open` fails). Used by
+    /// `commands::storage_health` to distinguish "durable but a write
+    /// failed" from "not durable at all" — both look identical from inside
+    /// a single save call, since in-memory saves always succeed.
+    path: Option<PathBuf>,
 }
 
 /// The platform app-data directory Aperture uses for its own files.
@@ -54,6 +61,7 @@ impl Db {
         migrate(&conn, path, MIGRATIONS)?;
         Ok(Db {
             conn: Mutex::new(conn),
+            path: Some(path.to_path_buf()),
         })
     }
 
@@ -62,7 +70,18 @@ impl Db {
         migrate(&conn, Path::new(":memory:"), MIGRATIONS).expect("migrate in-memory sqlite");
         Db {
             conn: Mutex::new(conn),
+            path: None,
         }
+    }
+
+    /// Whether this `Db` is backed by a real on-disk file (`Db::open`
+    /// succeeded) rather than an in-memory connection (`Db::in_memory()`,
+    /// used both directly by tests and as `lib.rs`'s fallback when
+    /// `Db::open` fails). Writes to an in-memory `Db` always succeed but
+    /// vanish on restart, so callers reporting persistence health need this
+    /// alongside the save result.
+    pub fn is_durable(&self) -> bool {
+        self.path.is_some()
     }
 
     pub fn save_summaries(&self, sessions: &[Session]) -> rusqlite::Result<()> {
@@ -171,8 +190,15 @@ fn migrate(conn: &Connection, path: &Path, migrations: &[&str]) -> rusqlite::Res
         let _ = std::fs::copy(path, backup);
     }
     for (i, sql) in migrations.iter().enumerate().skip(version) {
-        conn.execute_batch(&format!("BEGIN;\n{sql}\nCOMMIT;"))?;
-        conn.pragma_update(None, "user_version", (i + 1) as i64)?;
+        // `PRAGMA user_version` is set inside the same transaction as the
+        // DDL: SQLite treats both as transactional within an explicit
+        // BEGIN/COMMIT, so a crash between them is impossible — either both
+        // land or neither does. Setting the version as a separate statement
+        // after COMMIT would leave a window where a crash commits the DDL
+        // but not the version bump; the next launch would then re-run this
+        // migration against an already-migrated schema and fail permanently
+        // (e.g. "table already exists"), bricking the on-disk database.
+        conn.execute_batch(&format!("BEGIN;\n{sql}\nPRAGMA user_version = {};\nCOMMIT;", i + 1))?;
     }
     Ok(())
 }
@@ -275,6 +301,34 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         let _ = std::fs::remove_file(dir.join("broken.db.bak"));
         std::fs::remove_dir(&dir).unwrap();
+    }
+
+    #[test]
+    fn migrate_commits_user_version_and_schema_together() {
+        // Regression test for the non-atomic version bump: `user_version`
+        // must land in the same transaction as the DDL, so after a
+        // successful `migrate` the two are always consistent — there's no
+        // window where the schema exists but the version wasn't recorded
+        // (or vice versa).
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn, Path::new(":memory:"), MIGRATIONS).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, MIGRATIONS.len() as i64);
+
+        let table_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'session_summaries'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(table_exists, 1);
+
+        // Re-running migrate against an already-migrated connection must be
+        // a no-op, not an attempt to re-apply DDL that would now fail with
+        // "table already exists".
+        migrate(&conn, Path::new(":memory:"), MIGRATIONS).unwrap();
     }
 
     #[test]
