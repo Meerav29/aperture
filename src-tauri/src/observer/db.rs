@@ -229,18 +229,29 @@ impl Db {
         )
     }
 
-    /// Delete file cursors not updated in `days` days. Returns the number
-    /// removed. Mirrors `prune_summaries` exactly — `updated_at` on this
-    /// table now has the same meaning it does on `session_summaries` since
-    /// `save_cursors` only advances it when a cursor's content actually
-    /// changed.
-    pub fn prune_cursors(&self, days: i64) -> rusqlite::Result<usize> {
+    /// Delete specific file cursors by path. Returns the number removed.
+    /// Callers are responsible for deciding which paths to delete — this
+    /// method is deliberately filesystem-agnostic (`Db` never touches the
+    /// filesystem directly); see `lib.rs`'s startup sequence, which deletes
+    /// cursors whose underlying transcript file no longer exists on disk.
+    /// This replaces a prior time-based `prune_cursors`, which was removed:
+    /// pruning a cursor by elapsed time while its file is still present
+    /// re-arms a full re-read of that file on the next poll (the cursor's
+    /// absence makes `Observer::poll` treat the file as newly discovered),
+    /// which silently undid `prune_summaries`'s deletion of the same
+    /// session on every subsequent launch.
+    pub fn delete_cursors(&self, paths: &[String]) -> rusqlite::Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
         let guard = self.state.lock().expect("db lock");
-        let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-        guard.conn.execute(
-            "DELETE FROM file_cursors WHERE updated_at < ?1",
-            params![cutoff],
-        )
+        let mut removed = 0;
+        for path in paths {
+            removed += guard
+                .conn
+                .execute("DELETE FROM file_cursors WHERE path = ?1", params![path])?;
+        }
+        Ok(removed)
     }
 
     /// Test-only accessor: the raw `updated_at` column for one summary row,
@@ -552,28 +563,42 @@ mod tests {
     }
 
     #[test]
-    fn prune_cursors_removes_only_old_cursors() {
+    fn delete_cursors_removes_only_the_named_paths() {
+        let db = Db::in_memory();
+        db.save_cursors(&[
+            CursorRecord {
+                path: "keep.jsonl".into(),
+                provider: "claude_code".into(),
+                ..Default::default()
+            },
+            CursorRecord {
+                path: "remove.jsonl".into(),
+                provider: "claude_code".into(),
+                ..Default::default()
+            },
+        ])
+        .unwrap();
+
+        let removed = db.delete_cursors(&["remove.jsonl".to_string()]).unwrap();
+        assert_eq!(removed, 1);
+
+        let remaining = db.load_cursors().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "keep.jsonl");
+    }
+
+    #[test]
+    fn delete_cursors_with_empty_list_is_a_no_op() {
         let db = Db::in_memory();
         db.save_cursors(&[CursorRecord {
-            path: "fresh.jsonl".into(),
+            path: "keep.jsonl".into(),
             provider: "claude_code".into(),
             ..Default::default()
         }])
         .unwrap();
-        {
-            let guard = db.state.lock().unwrap();
-            let old = (ChronoUtc::now() - chrono::Duration::days(200)).to_rfc3339();
-            guard.conn.execute(
-                "INSERT INTO file_cursors (path, provider, offset, initial_len, malformed, updated_at)
-                 VALUES ('old.jsonl', 'claude_code', 0, 0, 0, ?1)",
-                params![old],
-            )
-            .unwrap();
-        }
-        let removed = db.prune_cursors(90).unwrap();
-        assert_eq!(removed, 1);
-        let remaining = db.load_cursors().unwrap();
-        assert_eq!(remaining.len(), 1);
-        assert_eq!(remaining[0].path, "fresh.jsonl");
+
+        let removed = db.delete_cursors(&[]).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(db.load_cursors().unwrap().len(), 1);
     }
 }

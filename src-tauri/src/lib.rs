@@ -51,7 +51,6 @@ pub fn run() {
         }
     };
     let _ = db.prune_summaries(SUMMARY_RETENTION_DAYS);
-    let _ = db.prune_cursors(SUMMARY_RETENTION_DAYS);
 
     let mut store = Store::default();
     if let Ok(sessions) = db.load_summaries() {
@@ -60,7 +59,15 @@ pub fn run() {
 
     let mut observer = Observer::default();
     if let Ok(cursors) = db.load_cursors() {
-        observer.restore_cursors(cursors);
+        let (live_cursors, dead_paths): (Vec<_>, Vec<_>) = cursors
+            .into_iter()
+            .partition(|c| std::path::Path::new(&c.path).exists());
+        if !dead_paths.is_empty() {
+            let _ = db.delete_cursors(
+                &dead_paths.into_iter().map(|c| c.path).collect::<Vec<_>>(),
+            );
+        }
+        observer.restore_cursors(live_cursors);
     }
 
     let db = Arc::new(db);

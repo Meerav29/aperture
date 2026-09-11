@@ -46,6 +46,13 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
 /// (`"degraded"`, in-memory detail) — in that last case saves always
 /// succeed against the in-memory connection, so `ok` alone can't tell this
 /// case apart from real persistence.
+///
+/// Note: because writes are content-aware, `save_summaries`/`save_cursors`
+/// may skip SQLite entirely on a cycle where nothing changed — so `"ok"`
+/// here means "no write failed this cycle", not "a write was attempted and
+/// succeeded". A database that silently became unwritable while the app was
+/// idle (nothing changed) won't be caught until there's actually something
+/// new to persist.
 fn storage_health(db: &Db, ok: bool) -> crate::observer::model::IntegrationHealth {
     let durable = db.is_durable();
     let state = if durable && ok { "ok" } else { "degraded" };
@@ -253,17 +260,25 @@ mod tests {
         let mut store = Store::default();
         let db = Db::open(&root.join("noop.db")).unwrap();
 
+        let cursor_path = path.to_string_lossy().into_owned();
+
         reconcile_and_persist(&mut observer, &mut store, &db);
         assert_eq!(db.load_summaries().unwrap().len(), 1);
         let updated_at_after_first = db.summary_updated_at("claude_code:noop").unwrap();
+        let cursor_updated_at_after_first = db.cursor_updated_at(&cursor_path).unwrap();
 
         std::thread::sleep(std::time::Duration::from_millis(5));
         reconcile_and_persist(&mut observer, &mut store, &db);
         let updated_at_after_second = db.summary_updated_at("claude_code:noop").unwrap();
+        let cursor_updated_at_after_second = db.cursor_updated_at(&cursor_path).unwrap();
 
         assert_eq!(
             updated_at_after_first, updated_at_after_second,
             "a second reconcile with no underlying file change must not rewrite the summary row"
+        );
+        assert_eq!(
+            cursor_updated_at_after_first, cursor_updated_at_after_second,
+            "a second reconcile with no underlying file change must not rewrite the cursor row"
         );
 
         drop(db);
