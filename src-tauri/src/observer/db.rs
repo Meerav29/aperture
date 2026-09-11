@@ -229,6 +229,20 @@ impl Db {
         )
     }
 
+    /// Delete file cursors not updated in `days` days. Returns the number
+    /// removed. Mirrors `prune_summaries` exactly — `updated_at` on this
+    /// table now has the same meaning it does on `session_summaries` since
+    /// `save_cursors` only advances it when a cursor's content actually
+    /// changed.
+    pub fn prune_cursors(&self, days: i64) -> rusqlite::Result<usize> {
+        let guard = self.state.lock().expect("db lock");
+        let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
+        guard.conn.execute(
+            "DELETE FROM file_cursors WHERE updated_at < ?1",
+            params![cutoff],
+        )
+    }
+
     /// Test-only accessor: the raw `updated_at` column for one summary row,
     /// used to prove content-aware writes skip unchanged rows without
     /// exposing this as production API surface.
@@ -535,5 +549,31 @@ mod tests {
         let remaining = db.load_summaries().unwrap();
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "claude_code:fresh");
+    }
+
+    #[test]
+    fn prune_cursors_removes_only_old_cursors() {
+        let db = Db::in_memory();
+        db.save_cursors(&[CursorRecord {
+            path: "fresh.jsonl".into(),
+            provider: "claude_code".into(),
+            ..Default::default()
+        }])
+        .unwrap();
+        {
+            let guard = db.state.lock().unwrap();
+            let old = (ChronoUtc::now() - chrono::Duration::days(200)).to_rfc3339();
+            guard.conn.execute(
+                "INSERT INTO file_cursors (path, provider, offset, initial_len, malformed, updated_at)
+                 VALUES ('old.jsonl', 'claude_code', 0, 0, 0, ?1)",
+                params![old],
+            )
+            .unwrap();
+        }
+        let removed = db.prune_cursors(90).unwrap();
+        assert_eq!(removed, 1);
+        let remaining = db.load_cursors().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].path, "fresh.jsonl");
     }
 }

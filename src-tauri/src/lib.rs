@@ -35,6 +35,7 @@ pub fn run() {
         }
     };
     let _ = db.prune_summaries(SUMMARY_RETENTION_DAYS);
+    let _ = db.prune_cursors(SUMMARY_RETENTION_DAYS);
 
     let mut store = Store::default();
     if let Ok(sessions) = db.load_summaries() {
