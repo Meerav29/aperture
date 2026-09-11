@@ -21,6 +21,22 @@ fn is_wake_gap(last: DateTime<Utc>, now: DateTime<Utc>) -> bool {
     (now - last).num_seconds() > SLEEP_WAKE_THRESHOLD_SECS
 }
 
+const MIN_WATCHER_RECONCILE_SPACING: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How much longer to wait before a watcher-triggered reconcile, given
+/// `elapsed` time since the last reconcile and the minimum allowed
+/// spacing. `None` means proceed immediately. This bounds reconcile
+/// frequency during a burst of filesystem-watcher activity (e.g. an
+/// actively streaming session) without touching the independent 5-second
+/// baseline `interval.tick()`, which is unaffected by this and keeps
+/// firing on its own schedule regardless.
+fn watcher_reconcile_delay(
+    elapsed: std::time::Duration,
+    min_spacing: std::time::Duration,
+) -> Option<std::time::Duration> {
+    min_spacing.checked_sub(elapsed).filter(|d| !d.is_zero())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let db_path = observer::db::data_dir().join("aperture.db");
@@ -79,10 +95,21 @@ pub fn run() {
                 let mut interval =
                     tokio::time::interval(std::time::Duration::from_secs(RECONCILE_INTERVAL_SECS));
                 let mut last_poll_at = Utc::now();
+                let mut last_reconcile_instant = std::time::Instant::now();
 
                 loop {
                     tokio::select! {
-                        _ = watch_rx.recv() => {}
+                        _ = watch_rx.recv() => {
+                            // Collapse a burst of debounced signals into one wake.
+                            while watch_rx.try_recv().is_ok() {}
+                            if let Some(remaining) = watcher_reconcile_delay(
+                                last_reconcile_instant.elapsed(),
+                                MIN_WATCHER_RECONCILE_SPACING,
+                            ) {
+                                tokio::time::sleep(remaining).await;
+                                while watch_rx.try_recv().is_ok() {}
+                            }
+                        }
                         _ = interval.tick() => {}
                     }
 
@@ -107,6 +134,7 @@ pub fn run() {
                         eprintln!("Observer failed: {e}");
                     }
                     last_poll_at = Utc::now();
+                    last_reconcile_instant = std::time::Instant::now();
                     push_snapshot(&handle, &store).await;
                 }
             });
@@ -133,5 +161,38 @@ mod tests {
         let last = chrono::Utc::now();
         let now = last + Duration::seconds(SLEEP_WAKE_THRESHOLD_SECS + 1);
         assert!(is_wake_gap(last, now));
+    }
+
+    #[test]
+    fn no_delay_needed_when_spacing_already_satisfied() {
+        assert_eq!(
+            watcher_reconcile_delay(
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(1)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn no_delay_needed_when_spacing_exactly_satisfied() {
+        assert_eq!(
+            watcher_reconcile_delay(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn delay_needed_when_within_minimum_spacing() {
+        assert_eq!(
+            watcher_reconcile_delay(
+                std::time::Duration::from_millis(300),
+                std::time::Duration::from_secs(1)
+            ),
+            Some(std::time::Duration::from_millis(700))
+        );
     }
 }
