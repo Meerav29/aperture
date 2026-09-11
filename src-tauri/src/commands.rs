@@ -233,6 +233,44 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_and_persist_writes_nothing_new_when_nothing_changed() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!(
+            "aperture-noop-reconcile-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("s.jsonl");
+        let line = serde_json::json!({
+            "type":"user","sessionId":"noop","timestamp":Utc::now().to_rfc3339(),
+            "message":{"content":"hi"}
+        })
+        .to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let mut observer = Observer::new(root.clone(), root.join("codex-unused"));
+        let mut store = Store::default();
+        let db = Db::open(&root.join("noop.db")).unwrap();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        let updated_at_after_first = db.summary_updated_at("claude_code:noop").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        reconcile_and_persist(&mut observer, &mut store, &db);
+        let updated_at_after_second = db.summary_updated_at("claude_code:noop").unwrap();
+
+        assert_eq!(
+            updated_at_after_first, updated_at_after_second,
+            "a second reconcile with no underlying file change must not rewrite the summary row"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn find_session_looks_up_by_id_not_native_id() {
         let mut s = Session::new("claude_code:abc".into(), "/repo".into(), Utc::now());
         s.native_id = "abc".into();
