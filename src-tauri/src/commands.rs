@@ -1,4 +1,5 @@
 use crate::observer::{
+    db::Db,
     model::{Session, Snapshot},
     passive::Observer,
     state::Store,
@@ -11,11 +12,67 @@ use tokio::sync::Mutex;
 pub struct Shared {
     pub store: Arc<Mutex<Store>>,
     pub observer: Arc<StdMutex<Observer>>,
+    pub db: Arc<Db>,
 }
 pub const SNAPSHOT_EVENT: &str = "sessions:snapshot";
 pub async fn push_snapshot(app: &AppHandle, store: &Arc<Mutex<Store>>) {
     let _ = app.emit(SNAPSHOT_EVENT, store.lock().await.snapshot());
 }
+
+/// Poll for new activity, then persist the resulting summaries and cursors.
+/// This is the single write path into SQLite — called from `lib.rs`'s
+/// reconcile loop and from the manual `rescan_transcripts` command, always
+/// from inside a `spawn_blocking` closure holding both locks.
+pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db) {
+    observer.poll(store);
+    let sessions = store.snapshot().sessions;
+    let cursors = observer.export_cursors();
+    let summaries_ok = db.save_summaries(&sessions).is_ok();
+    let cursors_ok = db.save_cursors(&cursors).is_ok();
+    store
+        .integrations
+        .push(storage_health(db, summaries_ok && cursors_ok));
+}
+
+/// Synthetic health row reporting whether SQLite persistence succeeded on
+/// the last write cycle. `Observer::poll` has no reference to `Db` and
+/// cannot know this; only this function, which actually calls
+/// `db.save_summaries`/`db.save_cursors`, can.
+///
+/// Distinguishes three states: writes succeeded against a durable,
+/// file-backed `Db` (`"ok"`); a durable `Db` had a write fail this cycle
+/// (`"degraded"`, save failure detail); or `db` is in-memory-only, e.g.
+/// because `lib.rs` fell back to `Db::in_memory()` after `Db::open` failed
+/// (`"degraded"`, in-memory detail) — in that last case saves always
+/// succeed against the in-memory connection, so `ok` alone can't tell this
+/// case apart from real persistence.
+///
+/// Note: because writes are content-aware, `save_summaries`/`save_cursors`
+/// may skip SQLite entirely on a cycle where nothing changed — so `"ok"`
+/// here means "no write failed this cycle", not "a write was attempted and
+/// succeeded". A database that silently became unwritable while the app was
+/// idle (nothing changed) won't be caught until there's actually something
+/// new to persist.
+fn storage_health(db: &Db, ok: bool) -> crate::observer::model::IntegrationHealth {
+    let durable = db.is_durable();
+    let state = if durable && ok { "ok" } else { "degraded" };
+    let detail = if !durable {
+        "in-memory only: database unavailable, history will not survive a restart.".to_string()
+    } else if ok {
+        "SQLite persistence writing normally.".to_string()
+    } else {
+        "SQLite write failed this cycle; running in-memory only until it recovers.".to_string()
+    };
+    crate::observer::model::IntegrationHealth {
+        provider: "storage".into(),
+        state: state.into(),
+        root: crate::observer::db::data_dir().to_string_lossy().into_owned(),
+        files: 0,
+        last_event_at: None,
+        detail,
+    }
+}
+
 #[tauri::command]
 pub async fn get_snapshot(shared: State<'_, Shared>) -> Result<Snapshot, String> {
     Ok(shared.store.lock().await.snapshot())
@@ -27,11 +84,11 @@ pub async fn rescan_transcripts(
 ) -> Result<usize, String> {
     let observer = shared.observer.clone();
     let store = shared.store.clone();
+    let db = shared.db.clone();
     tokio::task::spawn_blocking(move || {
-        observer
-            .lock()
-            .map_err(|e| e.to_string())?
-            .poll(&mut store.blocking_lock());
+        let mut observer_guard = observer.lock().map_err(|e| e.to_string())?;
+        let mut store_guard = store.blocking_lock();
+        reconcile_and_persist(&mut observer_guard, &mut store_guard, &db);
         Ok::<_, String>(())
     })
     .await
@@ -85,7 +142,148 @@ fn transcript_dir(s: &Session) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observer::passive::Observer;
     use chrono::Utc;
+
+    #[test]
+    fn reconcile_and_persist_polls_and_writes_summaries_and_cursors_to_the_db() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!("aperture-reconcile-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("s.jsonl");
+        let line = serde_json::json!({
+            "type":"user","sessionId":"r1","timestamp":Utc::now().to_rfc3339(),
+            "message":{"content":"hi"}
+        })
+        .to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let mut observer = Observer::new(root.clone(), root.join("codex-unused"));
+        let mut store = Store::default();
+        let db = Db::in_memory();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        assert_eq!(store.snapshot().sessions.len(), 1);
+        let persisted = db.load_summaries().unwrap();
+        assert_eq!(persisted.len(), 1);
+        assert_eq!(persisted[0].id, "claude_code:r1");
+        let cursors = db.load_cursors().unwrap();
+        assert_eq!(cursors.len(), 1);
+        assert!(cursors[0].offset > 0);
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_and_persist_reports_storage_health_ok_when_durable() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!("aperture-storage-health-cmd-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        // A real, file-backed Db (not Db::in_memory()) is required here:
+        // storage_health now reports "ok" only when persistence is both
+        // durable and the last write succeeded.
+        let db = Db::open(&root.join("health.db")).unwrap();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "ok");
+        assert!(storage.detail.contains("SQLite"));
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_and_persist_reports_storage_health_degraded_when_in_memory_fallback() {
+        use crate::observer::db::Db;
+
+        // Mirrors lib.rs's fallback path: when Db::open fails, the app
+        // continues with Db::in_memory() rather than crashing. Writes
+        // against that in-memory Db always succeed, so storage_health must
+        // rely on Db::is_durable() (not just the save result) to catch this
+        // and report "degraded" rather than misleadingly report "ok".
+        let root = std::env::temp_dir().join(format!(
+            "aperture-storage-health-inmem-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        let db = Db::in_memory();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "degraded");
+        assert!(
+            storage.detail.contains("in-memory"),
+            "expected in-memory detail, got: {}",
+            storage.detail
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_and_persist_writes_nothing_new_when_nothing_changed() {
+        use crate::observer::db::Db;
+
+        let root = std::env::temp_dir().join(format!(
+            "aperture-noop-reconcile-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("s.jsonl");
+        let line = serde_json::json!({
+            "type":"user","sessionId":"noop","timestamp":Utc::now().to_rfc3339(),
+            "message":{"content":"hi"}
+        })
+        .to_string();
+        std::fs::write(&path, format!("{line}\n")).unwrap();
+
+        let mut observer = Observer::new(root.clone(), root.join("codex-unused"));
+        let mut store = Store::default();
+        let db = Db::open(&root.join("noop.db")).unwrap();
+
+        let cursor_path = path.to_string_lossy().into_owned();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        let updated_at_after_first = db.summary_updated_at("claude_code:noop").unwrap();
+        let cursor_updated_at_after_first = db.cursor_updated_at(&cursor_path).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        reconcile_and_persist(&mut observer, &mut store, &db);
+        let updated_at_after_second = db.summary_updated_at("claude_code:noop").unwrap();
+        let cursor_updated_at_after_second = db.cursor_updated_at(&cursor_path).unwrap();
+
+        assert_eq!(
+            updated_at_after_first, updated_at_after_second,
+            "a second reconcile with no underlying file change must not rewrite the summary row"
+        );
+        assert_eq!(
+            cursor_updated_at_after_first, cursor_updated_at_after_second,
+            "a second reconcile with no underlying file change must not rewrite the cursor row"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn find_session_looks_up_by_id_not_native_id() {

@@ -11,7 +11,7 @@ defines the target design; [validation](validation/README.md) contains evidence.
 | Product requirements and phased specification | Written; maintained as implementation evolves | Requirements/specification, not proof of runtime completion |
 | Windows two-provider observation | Core passive milestone demonstrated | Real two-provider file growth and preserved settings in validation records; permission coverage remains limited |
 | All-host Windows/macOS compatibility and attention | In progress, not complete | Windows historical/live evidence is mixed; macOS has no execution evidence |
-| Durable collection/recovery | Planned | No SQLite/durable cursors yet |
+| Durable collection/recovery | Implemented | SQLite summaries/cursors, debounced watcher, restart/sleep-wake reconciliation; git identity and IPC/SessionKey revision remain planned |
 | Repository/worktree dashboard | Planned | Directory grouping is not repository identity |
 | Daily-use desktop beta | Planned | See Phase 3 gates |
 | Production ready state | Planned | Requires all advertised platform release gates |

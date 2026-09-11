@@ -16,11 +16,11 @@ file observation for both providers, not the original HTTP/hook spike.
 
 | Area | Audited baseline at 9df871d | Remaining target |
 |---|---|---|
-| Ingestion | Two-second polling and bounded incremental JSONL reads for both providers | Optional attention enrichment; watcher/reconciliation and durable cursors |
+| Ingestion | Debounced filesystem watching plus 5s reconcile, bounded incremental JSONL reads for both providers | Optional attention enrichment |
 | Identity | Provider-qualified IDs in passive adapters | Strong shared types, child identity and concurrent request tracking |
 | Configuration | Passive roots via environment; no automatic settings writes | Safe explicit enrichment setup; eventual per-provider repair UI |
 | Status | Recent/stale/history-only; process liveness unknown | Session-specific reconciliation and trustworthy attention |
-| History | In-memory summaries/cursors; replay after restart | SQLite summaries, migrations, retention and recoverable cursors |
+| History | SQLite summaries and recoverable cursors; restart loads stale/history_only then reconciles | Retention/migration evidence at scale; git identity |
 | Git | repo_root still unresolved; UI groups by cwd | Real repository/worktree identity |
 | Navigation | Open working folder or transcript-containing folder | Validated destinations, errors, structured outcomes and optional exact focus |
 | UI | Both providers, attention, freshness, health; revised subscription cleanup | Filters/details, accessibility, notifications and daily-use polish |
