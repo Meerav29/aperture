@@ -2,6 +2,7 @@
 //! cursors. One connection, guarded by a mutex, touched only from blocking
 //! tasks — see `lib.rs`'s reconcile loop for the single-writer contract.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -22,8 +23,21 @@ pub struct CursorRecord {
     pub created_ns: Option<i64>,
 }
 
+/// The connection plus an in-memory "last written" cache, kept in one
+/// mutex so checking the cache and writing SQLite can never race or need
+/// separate lock ordering. The cache starts empty every process launch —
+/// the first write after each restart is a full, unoptimized write; every
+/// write after that skips rows whose content hasn't changed since the last
+/// successful write, which is also what makes `updated_at`-based retention
+/// meaningful again (it only advances when content actually changes).
+struct ConnState {
+    conn: Connection,
+    summary_cache: HashMap<String, String>,
+    cursor_cache: HashMap<String, CursorRecord>,
+}
+
 pub struct Db {
-    conn: Mutex<Connection>,
+    state: Mutex<ConnState>,
     /// The on-disk path this `Db` was opened against, or `None` when backed
     /// by an in-memory connection (either `Db::in_memory()` directly, or
     /// `lib.rs`'s fallback after `Db::open` fails). Used by
@@ -60,7 +74,11 @@ impl Db {
         let conn = Connection::open(path)?;
         migrate(&conn, path, MIGRATIONS)?;
         Ok(Db {
-            conn: Mutex::new(conn),
+            state: Mutex::new(ConnState {
+                conn,
+                summary_cache: HashMap::new(),
+                cursor_cache: HashMap::new(),
+            }),
             path: Some(path.to_path_buf()),
         })
     }
@@ -69,7 +87,11 @@ impl Db {
         let conn = Connection::open_in_memory().expect("open in-memory sqlite");
         migrate(&conn, Path::new(":memory:"), MIGRATIONS).expect("migrate in-memory sqlite");
         Db {
-            conn: Mutex::new(conn),
+            state: Mutex::new(ConnState {
+                conn,
+                summary_cache: HashMap::new(),
+                cursor_cache: HashMap::new(),
+            }),
             path: None,
         }
     }
@@ -85,23 +107,41 @@ impl Db {
     }
 
     pub fn save_summaries(&self, sessions: &[Session]) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().expect("db lock");
-        let tx = conn.transaction()?;
-        let now = Utc::now().to_rfc3339();
+        let mut guard = self.state.lock().expect("db lock");
+        let state = &mut *guard;
+
+        let mut changed: Vec<(String, String)> = Vec::new();
         for s in sessions {
             let data = serde_json::to_string(s).expect("Session serializes");
-            tx.execute(
-                "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
-                params![s.id, data, now],
-            )?;
+            if state.summary_cache.get(&s.id) != Some(&data) {
+                changed.push((s.id.clone(), data));
+            }
         }
-        tx.commit()
+        if changed.is_empty() {
+            return Ok(());
+        }
+
+        let now = Utc::now().to_rfc3339();
+        {
+            let tx = state.conn.transaction()?;
+            for (id, data) in &changed {
+                tx.execute(
+                    "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
+                     ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at",
+                    params![id, data, now],
+                )?;
+            }
+            tx.commit()?;
+        }
+        for (id, data) in changed {
+            state.summary_cache.insert(id, data);
+        }
+        Ok(())
     }
 
     pub fn load_summaries(&self) -> rusqlite::Result<Vec<Session>> {
-        let conn = self.conn.lock().expect("db lock");
-        let mut stmt = conn.prepare("SELECT data FROM session_summaries")?;
+        let guard = self.state.lock().expect("db lock");
+        let mut stmt = guard.conn.prepare("SELECT data FROM session_summaries")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut out = Vec::new();
         for r in rows {
@@ -113,38 +153,54 @@ impl Db {
     }
 
     pub fn save_cursors(&self, cursors: &[CursorRecord]) -> rusqlite::Result<()> {
-        let mut conn = self.conn.lock().expect("db lock");
-        let tx = conn.transaction()?;
-        let now = Utc::now().to_rfc3339();
-        for c in cursors {
-            tx.execute(
-                "INSERT INTO file_cursors
-                    (path, provider, offset, initial_len, malformed, session_id, host, created_ns, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-                 ON CONFLICT(path) DO UPDATE SET
-                    provider = excluded.provider, offset = excluded.offset,
-                    initial_len = excluded.initial_len, malformed = excluded.malformed,
-                    session_id = excluded.session_id, host = excluded.host,
-                    created_ns = excluded.created_ns, updated_at = excluded.updated_at",
-                params![
-                    c.path,
-                    c.provider,
-                    c.offset as i64,
-                    c.initial_len as i64,
-                    c.malformed as i64,
-                    c.session_id,
-                    c.host,
-                    c.created_ns,
-                    now
-                ],
-            )?;
+        let mut guard = self.state.lock().expect("db lock");
+        let state = &mut *guard;
+
+        let changed: Vec<&CursorRecord> = cursors
+            .iter()
+            .filter(|c| state.cursor_cache.get(&c.path) != Some(*c))
+            .collect();
+        if changed.is_empty() {
+            return Ok(());
         }
-        tx.commit()
+
+        let now = Utc::now().to_rfc3339();
+        {
+            let tx = state.conn.transaction()?;
+            for c in &changed {
+                tx.execute(
+                    "INSERT INTO file_cursors
+                        (path, provider, offset, initial_len, malformed, session_id, host, created_ns, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                     ON CONFLICT(path) DO UPDATE SET
+                        provider = excluded.provider, offset = excluded.offset,
+                        initial_len = excluded.initial_len, malformed = excluded.malformed,
+                        session_id = excluded.session_id, host = excluded.host,
+                        created_ns = excluded.created_ns, updated_at = excluded.updated_at",
+                    params![
+                        c.path,
+                        c.provider,
+                        c.offset as i64,
+                        c.initial_len as i64,
+                        c.malformed as i64,
+                        c.session_id,
+                        c.host,
+                        c.created_ns,
+                        now
+                    ],
+                )?;
+            }
+            tx.commit()?;
+        }
+        for c in changed {
+            state.cursor_cache.insert(c.path.clone(), c.clone());
+        }
+        Ok(())
     }
 
     pub fn load_cursors(&self) -> rusqlite::Result<Vec<CursorRecord>> {
-        let conn = self.conn.lock().expect("db lock");
-        let mut stmt = conn.prepare(
+        let guard = self.state.lock().expect("db lock");
+        let mut stmt = guard.conn.prepare(
             "SELECT path, provider, offset, initial_len, malformed, session_id, host, created_ns
              FROM file_cursors",
         )?;
@@ -165,12 +221,45 @@ impl Db {
 
     /// Delete summaries not updated in `days` days. Returns the number removed.
     pub fn prune_summaries(&self, days: i64) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().expect("db lock");
+        let guard = self.state.lock().expect("db lock");
         let cutoff = (Utc::now() - chrono::Duration::days(days)).to_rfc3339();
-        conn.execute(
+        guard.conn.execute(
             "DELETE FROM session_summaries WHERE updated_at < ?1",
             params![cutoff],
         )
+    }
+
+    /// Test-only accessor: the raw `updated_at` column for one summary row,
+    /// used to prove content-aware writes skip unchanged rows without
+    /// exposing this as production API surface.
+    #[cfg(test)]
+    pub(crate) fn summary_updated_at(&self, id: &str) -> Option<String> {
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .query_row(
+                "SELECT updated_at FROM session_summaries WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .ok()
+    }
+
+    /// Test-only accessor: the raw `updated_at` column for one cursor row.
+    /// See `summary_updated_at`.
+    #[cfg(test)]
+    pub(crate) fn cursor_updated_at(&self, path: &str) -> Option<String> {
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .query_row(
+                "SELECT updated_at FROM file_cursors WHERE path = ?1",
+                params![path],
+                |r| r.get(0),
+            )
+            .ok()
     }
 }
 
@@ -236,6 +325,102 @@ mod tests {
         let loaded = db.load_summaries().unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].status, crate::observer::model::SessionStatus::Working);
+    }
+
+    #[test]
+    fn resaving_unchanged_summary_does_not_touch_updated_at() {
+        let db = Db::in_memory();
+        let s = sample_session("claude_code:a");
+        db.save_summaries(&[s.clone()]).unwrap();
+        let first = db.summary_updated_at("claude_code:a").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.save_summaries(&[s]).unwrap();
+        let second = db.summary_updated_at("claude_code:a").unwrap();
+
+        assert_eq!(first, second, "unchanged content must not touch updated_at");
+    }
+
+    #[test]
+    fn resaving_changed_summary_updates_data_and_updated_at() {
+        let db = Db::in_memory();
+        let mut s = sample_session("claude_code:a");
+        db.save_summaries(&[s.clone()]).unwrap();
+        let first = db.summary_updated_at("claude_code:a").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        s.status = crate::observer::model::SessionStatus::Working;
+        db.save_summaries(&[s]).unwrap();
+        let second = db.summary_updated_at("claude_code:a").unwrap();
+
+        assert_ne!(first, second, "changed content must update updated_at");
+        let loaded = db.load_summaries().unwrap();
+        assert_eq!(
+            loaded[0].status,
+            crate::observer::model::SessionStatus::Working
+        );
+    }
+
+    #[test]
+    fn batch_save_only_rewrites_changed_summary_rows() {
+        let db = Db::in_memory();
+        let a = sample_session("claude_code:a");
+        let b = sample_session("claude_code:b");
+        db.save_summaries(&[a.clone(), b.clone()]).unwrap();
+        let a_before = db.summary_updated_at("claude_code:a").unwrap();
+        let b_before = db.summary_updated_at("claude_code:b").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut b2 = b;
+        b2.status = crate::observer::model::SessionStatus::Working;
+        db.save_summaries(&[a, b2]).unwrap();
+
+        let a_after = db.summary_updated_at("claude_code:a").unwrap();
+        let b_after = db.summary_updated_at("claude_code:b").unwrap();
+        assert_eq!(a_before, a_after, "unchanged row a must not be rewritten");
+        assert_ne!(b_before, b_after, "changed row b must be rewritten");
+    }
+
+    #[test]
+    fn resaving_unchanged_cursor_does_not_touch_updated_at() {
+        let db = Db::in_memory();
+        let record = CursorRecord {
+            path: "C:/fixture/f.jsonl".into(),
+            provider: "claude_code".into(),
+            offset: 10,
+            ..Default::default()
+        };
+        db.save_cursors(&[record.clone()]).unwrap();
+        let first = db.cursor_updated_at("C:/fixture/f.jsonl").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.save_cursors(&[record]).unwrap();
+        let second = db.cursor_updated_at("C:/fixture/f.jsonl").unwrap();
+
+        assert_eq!(first, second, "unchanged cursor must not touch updated_at");
+    }
+
+    #[test]
+    fn resaving_changed_cursor_updates_data_and_updated_at() {
+        let db = Db::in_memory();
+        let record = CursorRecord {
+            path: "C:/fixture/f.jsonl".into(),
+            provider: "claude_code".into(),
+            offset: 10,
+            ..Default::default()
+        };
+        db.save_cursors(&[record.clone()]).unwrap();
+        let first = db.cursor_updated_at("C:/fixture/f.jsonl").unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let mut moved = record;
+        moved.offset = 20;
+        db.save_cursors(&[moved]).unwrap();
+        let second = db.cursor_updated_at("C:/fixture/f.jsonl").unwrap();
+
+        assert_ne!(first, second, "changed cursor must update updated_at");
+        let loaded = db.load_cursors().unwrap();
+        assert_eq!(loaded[0].offset, 20);
     }
 
     #[test]
@@ -337,9 +522,9 @@ mod tests {
         db.save_summaries(&[sample_session("claude_code:fresh")])
             .unwrap();
         {
-            let conn = db.conn.lock().unwrap();
+            let guard = db.state.lock().unwrap();
             let old = (ChronoUtc::now() - chrono::Duration::days(200)).to_rfc3339();
-            conn.execute(
+            guard.conn.execute(
                 "INSERT INTO session_summaries (id, data, updated_at) VALUES ('old', '{}', ?1)",
                 params![old],
             )
