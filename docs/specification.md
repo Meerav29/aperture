@@ -31,13 +31,18 @@ The current Windows follow-up is recorded in
 Use that report for subsequent changes and test counts. The baseline above
 does not claim that this follow-up is complete.
 
-Dormant legacy hook code is not registered by the baseline desktop. Its unsafe
-settings parser/group removal and raw-ID reducer must not be re-enabled without
-repair. The passive implementation avoids provider settings writes; that is not
-proof the legacy installer is safe. Historical scans do not prove liveness.
-Counts and title fixes in the legacy transcript reader do not automatically
-apply to the passive UI. Some prior hook-only and host-field assumptions were
-too broad; verify actual installed-version payloads.
+The legacy hook installer and HTTP listener have been removed from the tree
+(they were dormant, never registered by the baseline desktop, and carried an
+unsafe settings parser/group removal and raw-ID reducer). The `aperture-hook`
+CLI plus the file-inbox path (`hook_bridge.rs`/`hook_payload.rs`) is the
+supported enrichment mechanism; any future automated settings-writing setup
+must meet the configuration-safety contract below before being added, not
+reuse the removed code. The passive implementation avoids provider settings
+writes; that is not proof an automated installer would be safe. Historical
+scans do not prove liveness. Counts and title fixes in the legacy transcript
+reader do not automatically apply to the passive UI. Some prior hook-only and
+host-field assumptions were too broad; verify actual installed-version
+payloads.
 
 The owner has no Mac. A friend will execute the
 [Mac handoff](validation/macos-checklist.md). Windows implementation and test
@@ -268,7 +273,7 @@ intact and offer recovery rather than silently creating an empty replacement.
 ### IPC and UI updates
 
 Add provider-scoped integration commands when automated setup is implemented;
-the dormant legacy installer is not an active API to reuse. Extend rescan with
+the removed legacy installer is not an API to reuse. Extend rescan with
 an optional provider and progress/partial errors. Session and navigation commands
 take SessionKey, not a bare native ID. Add persistent hide_session (no active
 forget command currently exists); use navigate_session(key, action)
@@ -325,7 +330,7 @@ without representing Phase 0 or the cross-platform release as complete.
 Deliver: passive two-provider baseline, provider-qualified identity, normalized
 boundary, optional safe hook enrichment for supported missing signals,
 provider badges/health, sanitized real fixtures, and the 12-row matrix in SPIKE.md.
-Do not expose the dormant installer; require safety before any automated setup. Validate event mapping,
+The legacy installer has been removed; require safety before any automated setup. Validate event mapping,
 discovery, process attribution, and navigation capabilities before relying on
 them in later phases.
 
