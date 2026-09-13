@@ -37,7 +37,6 @@ Passive mode requires no integration installation or provider settings changes. 
 `CLAUDE_CONFIG_DIR` or `CODEX_HOME` in Aperture's environment for non-default
 provider roots. Start and operate all sessions externally.
 
-The legacy hook installer and HTTP listener are not registered by the desktop.
 The app exposes folder/transcript-folder navigation, not session control.
 
 ## Optional attention hooks (Windows development build)
