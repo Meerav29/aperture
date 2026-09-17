@@ -20,7 +20,7 @@ file observation for both providers, not the original HTTP/hook spike.
 | Identity | Provider-qualified IDs in passive adapters | Strong shared types, child identity and concurrent request tracking |
 | Configuration | Passive roots via environment; no automatic settings writes | Safe explicit enrichment setup; eventual per-provider repair UI |
 | Status | Recent/stale/history-only; process liveness unknown | Session-specific reconciliation and trustworthy attention |
-| History | SQLite summaries and recoverable cursors; restart loads stale/history_only then reconciles | Retention/migration evidence at scale; git identity |
+| History | SQLite summaries and recoverable cursors; restart loads stale/history_only then reconciles; retention pruning implemented for summaries | Retention/migration evidence at scale (#13); git identity |
 | Git | repo_root still unresolved; UI groups by cwd | Real repository/worktree identity |
 | Navigation | Open working folder or transcript-containing folder | Validated destinations, errors, structured outcomes and optional exact focus |
 | UI | Both providers, attention, freshness, health; revised subscription cleanup | Filters/details, accessibility, notifications and daily-use polish |

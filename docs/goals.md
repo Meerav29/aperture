@@ -1,6 +1,6 @@
 # Development goals and current status
 
-Updated: 2026-09-08. Read [product vision](product-vision.md) before choosing a
+Updated: 2026-09-17. Read [product vision](product-vision.md) before choosing a
 goal. [Requirements](requirements.md) define acceptance; [specification](specification.md)
 defines the target design; [validation](validation/README.md) contains evidence.
 
@@ -11,7 +11,8 @@ defines the target design; [validation](validation/README.md) contains evidence.
 | Product requirements and phased specification | Written; maintained as implementation evolves | Requirements/specification, not proof of runtime completion |
 | Windows two-provider observation | Core passive milestone demonstrated | Real two-provider file growth and preserved settings in validation records; permission coverage remains limited |
 | All-host Windows/macOS compatibility and attention | In progress, not complete | Windows historical/live evidence is mixed; macOS has no execution evidence |
-| Durable collection/recovery | Implemented | SQLite summaries/cursors, debounced watcher, restart/sleep-wake reconciliation; git identity and IPC/SessionKey revision remain planned |
+| Durable collection/recovery | Implemented | SQLite summaries/cursors, debounced watcher, restart/sleep-wake reconciliation, content-aware/deduplicated writes, `file_cursors` retention pruning, and watcher-triggered reconcile coalescing; git identity and IPC/SessionKey revision remain planned |
+| Legacy hook installer/listener removal | Implemented | Dormant, unsafe legacy HTTP listener and settings installer removed from the tree (closes #10); superseded by the `aperture-hook` CLI plus file-inbox path |
 | Repository/worktree dashboard | Planned | Directory grouping is not repository identity |
 | Daily-use desktop beta | Planned | See Phase 3 gates |
 | Production ready state | Planned | Requires all advertised platform release gates |
