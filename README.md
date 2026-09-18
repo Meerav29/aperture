@@ -15,6 +15,7 @@ is pending a friend with a Mac; Windows evidence does not establish Mac support.
 
 - [Product vision](docs/product-vision.md): central source of truth for product intent; read first.
 - [Development goals](docs/goals.md): current assignment, audited status, and Mac handoff.
+- [Roadmap](docs/roadmap.md): phases A through E from September 2026 to March 2027, with gates, benchmarks, and slip rules.
 - [Requirements](docs/requirements.md): product scope and acceptance criteria.
 - [Detailed specification](docs/specification.md): architecture, interfaces,
   behavior, verification, and phases from right now through production readiness.

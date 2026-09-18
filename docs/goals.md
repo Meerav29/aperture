@@ -1,8 +1,12 @@
 # Development goals and current status
 
-Updated: 2026-09-08. Read [product vision](product-vision.md) before choosing a
+Updated: 2026-09-16. Read [product vision](product-vision.md) before choosing a
 goal. [Requirements](requirements.md) define acceptance; [specification](specification.md)
 defines the target design; [validation](validation/README.md) contains evidence.
+The [roadmap](roadmap.md) sequences the specification phases onto a calendar
+(Phase A dogfood gate through Phase E production, Sep 2026 to Mar 2027) and
+maps each open issue to a GitHub milestone. Pick work from the current roadmap
+phase; update the table below and the roadmap together when a gate moves.
 
 ## Completed and incomplete work
 
