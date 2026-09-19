@@ -5,24 +5,36 @@ Rotation: Mon / Wed / Fri. Base branch: `auto/queue`. Window: 2026-09-20 → 09-
 
 ## Read this before picking up a slice
 
-Read [AGENTS.md](../../AGENTS.md) and [docs/product-vision.md](../product-vision.md)
-first. They override this file on approach and on what may be claimed.
+Read [AGENTS.md](../../AGENTS.md), [docs/roadmap.md](../roadmap.md), and
+[docs/product-vision.md](../product-vision.md) first. They override this file on
+approach, on sequencing, and on what may be claimed.
 
-**Most of aperture's open work is not automatable and is deliberately not in this
-queue.** The remaining Windows and macOS items need evidence from real installed
-hosts. `docs/requirements.md` and `AGENTS.md` are explicit that a build, a
-synthetic event, or a CI compile cannot establish runtime behavior, and that
-missing evidence must never be recorded as success.
+We are inside **Phase A — Dogfood gate (Sep 16 → Oct 9)**. Phase A's gate is
+five consecutive clean workdays in the dogfood log plus six evidenced Windows
+rows. **Autopilot cannot advance that gate and does not try.** Items 2 through 5
+of Phase A — hook enrichment on the owner's machine, live-host evidence, the
+dogfood log, stability fixes found by the log — all require the owner at a real
+machine.
 
-The slices below were chosen because each has a real unit-test gate and none
-requires host evidence. Binding for every slice:
+What autopilot *can* do is Phase A item 1, the correctness leftovers, which the
+roadmap describes as "small and unblock long-running daily use." That is slices
+1 and 2 below. Slice 3 is protective test coverage for the same storage layer.
 
-- **Never write to `docs/validation/**`.** That lane belongs to the owner.
+### Binding constraints
+
+- **Never write to `docs/validation/**`.** That lane is the owner's.
 - **Never assert host compatibility, runtime behavior, or validation status.**
   Passing tests are evidence about code, not about a real host.
+- **Never edit `docs/roadmap.md` or `docs/goals.md`.** Gate status is the
+  owner's to record. (`docs/goals.md` is separately stale per issue #22, being
+  handled on the `claude/github-quick-wins-1m20eg` branch — leave it alone.)
 - Never launch, resume, message, or control a real agent session to make a test
   pass. `AGENTS.md` forbids it.
 - Passive discovery must keep working without hooks or provider settings edits.
+- **Every PR ships a review pack** — what the owner runs and looks at, sized to
+  30 minutes or less. The roadmap is explicit: a PR without one is not ready.
+- The roadmap caps work in progress at **two open implementation branches**.
+  Autopilot halts if the previous slice has not merged, so it holds at one.
 - If a criterion cannot be checked, say so in the PR body and let the slice be
   rejected. Do not soften the criterion.
 
@@ -31,89 +43,93 @@ Terminal: `held` (owner vetoed), `blocked` (review rejected).
 
 ---
 
-## slice-1 — Git identity service and repository/worktree grouping
+## slice-1 — Issue #18: stop `load_summaries` silently dropping rows
 
 Status: todo
-Requirement: R6. Spec: `docs/specification.md` §"Git identity" and §4.
-Currently listed as "Planned" in [docs/goals.md](../goals.md); the UI groups by
-`cwd` and `repo_root` is unresolved.
+Issue: [#18](https://github.com/Meerav29/aperture/issues/18) (Phase A)
+Code: `src-tauri/src/observer/db.rs` (`Db::load_summaries`)
 
-Acceptance:
+**This one goes first for a reason.** The issue argues that `Session`'s shape
+will change as #9 (SessionKey) and #7 (Git identity) land, and each such change
+risks silently orphaning persisted rows unless this is fixed first. Sequencing
+the Git-identity work ahead of it would be backwards.
 
-- [ ] Read-only Git queries run with **argument arrays** (not shell strings),
-      **outside the reducer lock**, with a **two-second timeout**.
-- [ ] Repository identity is the canonical absolute Git **common directory**;
-      worktree identity is the **checkout root**. Linked worktrees group under
-      one repository.
-- [ ] **Separate clones remain separate repositories even when they share a
-      remote URL.** A test covers this — it is the case a remote-URL-based
-      implementation gets wrong.
-- [ ] Branch resolves, and detached HEAD is shown as detached rather than as a
-      branch name.
-- [ ] Identity refreshes after a cwd change and on manual rescan.
-- [ ] Native display paths are preserved. Paths are **not** lowercased on
-      case-sensitive volumes, while identity comparison stays filesystem-aware.
-- [ ] None of these break collection: subdirectories, paths with spaces, Unicode
-      paths, linked-worktree `.git` files, deleted worktrees, non-Git folders,
-      Git unavailable on PATH. Each has a test.
-- [ ] Sessions in the same checkout remain distinct sessions.
-- [ ] `cargo test` and `npm run build` pass.
+Acceptance (from the issue — do not weaken):
 
-Out of scope: navigation actions and their fallback labels; macOS path
-behavior beyond what unit tests can cover.
+- [ ] A test proves a row with an incompatible or corrupted JSON body is
+      **detected — counted or logged** — rather than silently vanishing, while
+      the remaining valid rows still load.
+- [ ] The failure is visible somewhere a developer or user could actually
+      notice, at minimum log output. Not merely absent from the returned
+      `Vec<Session>`.
+- [ ] A decision is recorded on whether `Session` gets `#[serde(default)]` /
+      tolerant deserialization for additive changes, **or** whether breaking
+      shape changes are accepted as a now-visible migration cost. Either answer
+      is defensible; record which and why in `docs/autopilot/decisions.md`.
+- [ ] Consistent with the honesty principle this issue cites from
+      `docs/specification.md` §"Storage and historical ingestion": a failure is
+      surfaced, never presented as a clean empty state.
+- [ ] `cargo test` passes; `npm run build` passes.
 
 ---
 
-## slice-2 — Process liveness signal
+## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
 Status: todo
-Spec: `docs/specification.md` §2 (status table), and the "Remaining real
-validation" section of
-[docs/validation/windows-compatibility-followup.md](../validation/windows-compatibility-followup.md),
-which names process liveness as future work. **Read that file; do not edit it.**
+Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
+Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
 
-The point of this slice is an honest signal. The spec is blunt that file scans
-do not prove liveness, and `AGENTS.md` requires distinguishing recent
-observation from process liveness from unknown.
+The roadmap proposes the rule: a session with no observation for **14 days**
+leaves the live store but stays in SQLite and returns through history views in
+Phase C. Use that unless the code makes it untenable; if it does, say so and
+record the alternative.
 
-Acceptance:
+Acceptance (from the issue — do not weaken):
 
-- [ ] Liveness is a distinct signal from recency of file activity. A session with
-      fresh file writes and a dead process does not report as live.
-- [ ] A **stale or reused PID** never yields a live claim. A test covers PID
-      reuse explicitly — the spec's risk table names it.
-- [ ] When liveness cannot be determined, the state is **unknown**, and unknown
-      is distinct from both live and ended in the model and in the UI.
-- [ ] Checks are bounded and do not block the reducer or collection.
-- [ ] No session is started, resumed, signalled, or otherwise controlled. Read
-      only.
-- [ ] `cargo test` and `npm run build` pass.
+- [ ] A documented, tested policy bounds `Store.sessions` independent of total
+      historical session count.
+- [ ] **Evicted sessions remain visible in history**, backed by the durable
+      SQLite summaries. Eviction from memory is not deletion.
+- [ ] A regression test proves `Store.sessions` does not grow unbounded across
+      many simulated reconcile cycles with aging sessions.
+- [ ] `Store::remove` (or equivalent) is actually wired into the reconcile path
+      — the issue's point is that the method exists but has no caller.
+- [ ] `cargo test` passes; `npm run build` passes.
 
-Out of scope: claiming verified liveness coverage for any real host. Implement
-the signal; the owner validates it.
+Do **not** claim the 24-hour soak or idle-memory targets are met. The issue is
+explicit that measurement stays issue #13's job. Making the targets *achievable
+in principle* is this slice's bar.
 
 ---
 
-## slice-3 — Search, filters, and details pane
+## slice-3 — Issue #20: multi-step migration test coverage
 
 Status: todo
-Requirement: R11 (partial). Spec: `docs/specification.md` §4.
+Issue: [#20](https://github.com/Meerav29/aperture/issues/20)
+Code: `src-tauri/src/observer/db.rs` (`migrate`, `MIGRATIONS`)
 
-Acceptance:
+Pure test work on the storage layer that slices 1 and 2 both touch. No product
+behavior changes, so it is sequence-neutral and safe to land last.
 
-- [ ] Default view groups **repository → worktree → session**, with the unified
-      attention area above the groups and both providers in it.
-- [ ] Controls exist for provider, status, repository, host, and text search,
-      plus active / history / hidden views.
-- [ ] Details include a bounded timeline, source freshness, host evidence,
-      counts where known, children, and the available navigation actions.
-- [ ] Title fallback is folder name plus short native ID. A provider-generated
-      title is **never** used as a unique identity.
-- [ ] Empty states distinguish *no sessions* from *disconnected integrations*
-      from *scan in progress*. A test covers all three.
-- [ ] The UI stays responsive during backfill; history is paginated or
-      virtualized, with no unbounded render.
-- [ ] `cargo test` and `npm run build` pass.
+Acceptance (from the issue — do not weaken):
 
-Out of scope: tray / menu-bar operation, notifications, and full keyboard
-accessibility — the rest of R11, left for a later slice.
+- [ ] A test proves a second migration applies cleanly on top of an
+      **already-migrated** database (not a fresh one), reaching
+      `user_version = 2` with migration 1's rows untouched.
+- [ ] A test proves a **failing** second migration rolls back cleanly, leaving
+      the database at its last successfully committed version with data intact
+      — byte-identical to the post-migration-1 state, not to a fresh file.
+- [ ] `cargo test` passes; `npm run build` passes.
+
+---
+
+## Explicitly not in this queue
+
+- **#7** (Git repository/worktree identity) and **#9** (SessionKey contract) are
+  Phase B, starting Oct 12, and #18 argues they should follow slice 1 anyway.
+- **#11** (tray, notifications, filters, accessibility) is Phase C — December.
+- **#5**, **#4**, **#6**, **#13** need real-host or real-fixture evidence.
+- **#22** is in flight on another branch.
+- **#24** (no CI, no frontend test tooling) is **half-addressed** by the CI
+  workflow added in the autopilot setup commit. Frontend test tooling remains
+  open; the issue should not be closed on the strength of that workflow alone.

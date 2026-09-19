@@ -28,10 +28,18 @@ asserting host compatibility, runtime behavior, or validation status**.
 
 That means:
 
-- **Nothing here advances the Windows compatibility goal.** Its status in
-  [docs/goals.md](docs/goals.md) is unchanged and still open.
+- **The Phase A dogfood gate is exactly where you left it.** Five clean workdays
+  and six evidenced Windows rows are yours to earn;
+  [docs/roadmap.md](docs/roadmap.md) is untouched and no gate was marked passed.
+- Autopilot took only **Phase A item 1**, the correctness leftovers (#18, #17),
+  plus migration test coverage (#20). Everything else in Phase A needs you at a
+  real machine.
 - **Nothing here is macOS evidence.** The friend handoff is untouched.
 - A green CI run in these PRs is evidence about code, not about a host.
+- `docs/goals.md` was not edited — it is stale per #22, which is in flight on
+  the `claude/github-quick-wins-1m20eg` branch.
+- The CI workflow added at setup **half-addresses #24**. Frontend test tooling
+  is still missing, so don't close that issue on the workflow alone.
 
 If you find a merged slice that claims otherwise, that is a bug in the
 automation and worth telling me about — `AGENTS.md` forbids it explicitly and
