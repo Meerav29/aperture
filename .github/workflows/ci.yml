@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, "auto/**"]
+  push:
+    branches: [main, "auto/queue"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback: TypeScript and the frontend bundle, without the Rust toolchain.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build frontend (includes tsc)
+        run: npm run build
+
+  # Windows rather than Ubuntu: it matches the project's actual target host and
+  # ships WebView2, so Tauri needs no webkit2gtk system dependencies. The crate
+  # is built here, not shipped -- release packaging is separate.
+  rust:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      # tauri.conf.json points frontendDist at ../dist, which is gitignored.
+      # tauri-build needs it to exist before the crate will compile.
+      - run: npm ci
+      - run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
