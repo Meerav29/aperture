@@ -26,7 +26,7 @@ Blast radius: <files or functions affected, and how reversible>
 
 ---
 
-## 2026-09-21 — slice-1, issue #18
+## 2026-09-21 — slice-1, PR #33
 Question:    Issue #18 asks for a ruling it deliberately leaves open: does
              `Session` get `#[serde(default)]` / tolerant deserialization so
              additive shape changes stop orphaning persisted rows, or are
@@ -71,7 +71,7 @@ Blast radius: `src-tauri/src/observer/model.rs` — comment only; no attribute,
              untouched. The behavior this entry rules on is serde's, not this
              repo's, so there is nothing here to revert.
 
-## 2026-09-21 — slice-1, issue #18
+## 2026-09-21 — slice-1, PR #33
 Question:    Where should a failed row surface? The issue asks for "log output
              at minimum" and `docs/roadmap.md` Phase A item 1 says "surface
              load failures in the storage health entry", but summaries are
