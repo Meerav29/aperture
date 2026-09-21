@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::Utc;
@@ -36,6 +37,31 @@ struct ConnState {
     cursor_cache: HashMap<String, CursorRecord>,
 }
 
+/// One stored summary row that could not be turned back into a `Session`.
+/// `id` comes from the row's own `id` column, which is readable even when the
+/// `data` blob is unusable, so a failure can name the session it lost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SummaryLoadFailure {
+    pub id: String,
+    pub error: String,
+}
+
+/// The result of `load_summaries`: the rows that deserialized, and the rows
+/// that did not. Returning both is deliberate — the previous signature was
+/// `Vec<Session>`, which made a row that failed to deserialize
+/// indistinguishable from a row that was never written, so callers had no way
+/// to tell a restored history from a partially lost one.
+#[derive(Debug, Default)]
+pub struct SummaryLoad {
+    pub sessions: Vec<Session>,
+    pub failed: Vec<SummaryLoadFailure>,
+}
+
+/// How many individual failures `load_summaries` names on stderr before it
+/// stops and leaves the rest to the summary line. A database that is broadly
+/// corrupt should not bury every other startup message.
+const MAX_LOGGED_LOAD_FAILURES: usize = 10;
+
 pub struct Db {
     state: Mutex<ConnState>,
     /// The on-disk path this `Db` was opened against, or `None` when backed
@@ -45,6 +71,12 @@ pub struct Db {
     /// failed" from "not durable at all" — both look identical from inside
     /// a single save call, since in-memory saves always succeed.
     path: Option<PathBuf>,
+    /// How many rows the most recent `load_summaries` could not deserialize.
+    /// Kept on `Db` rather than only returned because summaries are loaded
+    /// once, at startup, while the storage health entry is rebuilt on every
+    /// reconcile cycle — without this the health row would go on reporting a
+    /// clean `"ok"` over a history that is quietly missing sessions.
+    unreadable_summaries: AtomicUsize,
 }
 
 /// The platform app-data directory Aperture uses for its own files.
@@ -80,6 +112,7 @@ impl Db {
                 cursor_cache: HashMap::new(),
             }),
             path: Some(path.to_path_buf()),
+            unreadable_summaries: AtomicUsize::new(0),
         })
     }
 
@@ -93,6 +126,7 @@ impl Db {
                 cursor_cache: HashMap::new(),
             }),
             path: None,
+            unreadable_summaries: AtomicUsize::new(0),
         }
     }
 
@@ -139,17 +173,61 @@ impl Db {
         Ok(())
     }
 
-    pub fn load_summaries(&self) -> rusqlite::Result<Vec<Session>> {
-        let guard = self.state.lock().expect("db lock");
-        let mut stmt = guard.conn.prepare("SELECT data FROM session_summaries")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for r in rows {
-            if let Ok(s) = serde_json::from_str::<Session>(&r?) {
-                out.push(s);
+    /// Load every stored summary, reporting the rows that could not be read
+    /// instead of dropping them on the floor. A row whose `data` no longer
+    /// matches the current `Session` shape — a field added by a later build,
+    /// a genuine corruption — is counted, logged, and named in
+    /// `SummaryLoad::failed`; the remaining valid rows still load.
+    ///
+    /// The unreadable rows are deliberately left in SQLite. This mirrors the
+    /// migration-failure rule in `docs/specification.md` ("Storage and
+    /// historical ingestion"): leave the original intact and surface the
+    /// failure, rather than silently presenting a clean empty state.
+    pub fn load_summaries(&self) -> rusqlite::Result<SummaryLoad> {
+        let mut out = SummaryLoad::default();
+        {
+            let guard = self.state.lock().expect("db lock");
+            let mut stmt = guard
+                .conn
+                .prepare("SELECT id, data FROM session_summaries")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for r in rows {
+                let (id, data) = r?;
+                match serde_json::from_str::<Session>(&data) {
+                    Ok(s) => out.sessions.push(s),
+                    Err(e) => out.failed.push(SummaryLoadFailure {
+                        id,
+                        error: e.to_string(),
+                    }),
+                }
             }
         }
+
+        self.unreadable_summaries
+            .store(out.failed.len(), Ordering::Relaxed);
+        for f in out.failed.iter().take(MAX_LOGGED_LOAD_FAILURES) {
+            eprintln!(
+                "Aperture: stored session summary {} could not be read ({}); \
+                 it is missing from history but was left in the database",
+                f.id, f.error
+            );
+        }
+        if !out.failed.is_empty() {
+            eprintln!(
+                "Aperture: {} of {} stored session summaries could not be read",
+                out.failed.len(),
+                out.failed.len() + out.sessions.len()
+            );
+        }
         Ok(out)
+    }
+
+    /// How many rows the most recent `load_summaries` could not deserialize,
+    /// for the storage health entry. Zero before any load.
+    pub fn unreadable_summaries(&self) -> usize {
+        self.unreadable_summaries.load(Ordering::Relaxed)
     }
 
     pub fn save_cursors(&self, cursors: &[CursorRecord]) -> rusqlite::Result<()> {
@@ -271,6 +349,25 @@ impl Db {
             .ok()
     }
 
+    /// Test-only writer: store a summary row's `data` verbatim, bypassing
+    /// `Session` serialization, so tests can plant a row whose body does not
+    /// match the current shape. There is no production path that writes an
+    /// unparseable summary — the real one is a build whose `Session` differs
+    /// from the build that wrote the row, which a test cannot reproduce.
+    #[cfg(test)]
+    pub(crate) fn insert_raw_summary(&self, id: &str, data: &str) {
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .execute(
+                "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+                params![id, data, Utc::now().to_rfc3339()],
+            )
+            .expect("insert raw summary");
+    }
+
     /// Test-only accessor: the raw `updated_at` column for one cursor row.
     /// See `summary_updated_at`.
     #[cfg(test)]
@@ -333,11 +430,134 @@ mod tests {
         let db = Db::in_memory();
         let sessions = vec![sample_session("claude_code:a"), sample_session("codex:b")];
         db.save_summaries(&sessions).unwrap();
-        let mut loaded = db.load_summaries().unwrap();
+        let mut loaded = db.load_summaries().unwrap().sessions;
         loaded.sort_by(|a, b| a.id.cmp(&b.id));
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].id, "claude_code:a");
         assert_eq!(loaded[1].id, "codex:b");
+    }
+
+    /// The same `Session` JSON a real row holds, with `drop` keys removed —
+    /// how a row written by a build with a different `Session` shape looks to
+    /// this one.
+    fn summary_json_without(id: &str, drop: &[&str]) -> String {
+        let value = serde_json::to_value(sample_session(id)).unwrap();
+        let mut obj = value.as_object().unwrap().clone();
+        for key in drop {
+            assert!(obj.remove(*key).is_some(), "{key} is not a Session field");
+        }
+        serde_json::Value::Object(obj).to_string()
+    }
+
+    #[test]
+    fn load_summaries_reports_unreadable_rows_and_still_loads_the_rest() {
+        // The bug this replaces: `load_summaries` skipped any row that failed
+        // to deserialize with no log, no count, and no way for a caller to
+        // tell the row apart from one that was never written.
+        let db = Db::in_memory();
+        db.save_summaries(&[sample_session("claude_code:good")])
+            .unwrap();
+        db.insert_raw_summary("claude_code:shape_changed", r#"{"id":"whatever"}"#);
+        db.insert_raw_summary("claude_code:corrupt", "{not json at all");
+
+        let load = db.load_summaries().unwrap();
+
+        assert_eq!(load.sessions.len(), 1, "valid rows must still load");
+        assert_eq!(load.sessions[0].id, "claude_code:good");
+
+        let mut failed: Vec<&str> = load.failed.iter().map(|f| f.id.as_str()).collect();
+        failed.sort();
+        assert_eq!(failed, ["claude_code:corrupt", "claude_code:shape_changed"]);
+        assert!(
+            load.failed.iter().all(|f| !f.error.is_empty()),
+            "each failure must carry why it failed"
+        );
+    }
+
+    #[test]
+    fn unreadable_rows_are_counted_for_health_and_left_in_the_database() {
+        let db = Db::in_memory();
+        db.save_summaries(&[sample_session("claude_code:good")])
+            .unwrap();
+        db.insert_raw_summary("claude_code:corrupt", "{");
+
+        db.load_summaries().unwrap();
+
+        // The count outlives the load itself: summaries are read once at
+        // startup, but `commands::storage_health` is rebuilt every cycle.
+        assert_eq!(db.unreadable_summaries(), 1);
+
+        // Eviction from the returned Vec is not deletion — the row stays put
+        // so the owner can recover it.
+        let rows: i64 = db
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_summaries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn a_later_clean_load_clears_the_unreadable_count() {
+        let db = Db::in_memory();
+        db.insert_raw_summary("claude_code:corrupt", "{");
+        db.load_summaries().unwrap();
+        assert_eq!(db.unreadable_summaries(), 1);
+
+        db.insert_raw_summary(
+            "claude_code:corrupt",
+            &serde_json::to_string(&sample_session("claude_code:corrupt")).unwrap(),
+        );
+        db.load_summaries().unwrap();
+
+        assert_eq!(
+            db.unreadable_summaries(),
+            0,
+            "health must stop reporting a failure the database no longer has"
+        );
+    }
+
+    #[test]
+    fn a_row_written_before_an_optional_field_existed_still_loads() {
+        // Characterization, not a new guarantee: serde's derive already
+        // resolves a missing `Option` field to `None`, so this passes before
+        // and after issue #18's change. It is here to pin that — the
+        // deserialization decision in `docs/autopilot/decisions.md` rests on
+        // additive `Option` fields being free, and a later `deny_unknown_
+        // fields`, a hand-written Deserialize, or a field changed from
+        // `Option<T>` to `T` would silently make every older row unreadable.
+        let db = Db::in_memory();
+        db.insert_raw_summary(
+            "claude_code:a",
+            &summary_json_without("claude_code:a", &["title", "git_branch"]),
+        );
+
+        let load = db.load_summaries().unwrap();
+
+        assert!(load.failed.is_empty(), "{:?}", load.failed);
+        assert_eq!(load.sessions.len(), 1);
+        assert!(load.sessions[0].title.is_none());
+        assert!(load.sessions[0].git_branch.is_none());
+    }
+
+    #[test]
+    fn a_row_missing_a_required_field_is_reported_rather_than_defaulted() {
+        // The strict half: defaulting `attention` would produce a session
+        // claiming a state nothing observed, which is the failure mode this
+        // issue exists to stop. It must surface as a failure instead.
+        let db = Db::in_memory();
+        db.insert_raw_summary(
+            "claude_code:a",
+            &summary_json_without("claude_code:a", &["attention"]),
+        );
+
+        let load = db.load_summaries().unwrap();
+
+        assert!(load.sessions.is_empty(), "no fabricated session");
+        assert_eq!(load.failed.len(), 1);
+        assert_eq!(load.failed[0].id, "claude_code:a");
     }
 
     #[test]
@@ -347,7 +567,7 @@ mod tests {
         db.save_summaries(&[s.clone()]).unwrap();
         s.status = crate::observer::model::SessionStatus::Working;
         db.save_summaries(&[s]).unwrap();
-        let loaded = db.load_summaries().unwrap();
+        let loaded = db.load_summaries().unwrap().sessions;
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].status, crate::observer::model::SessionStatus::Working);
     }
@@ -379,7 +599,7 @@ mod tests {
         let second = db.summary_updated_at("claude_code:a").unwrap();
 
         assert_ne!(first, second, "changed content must update updated_at");
-        let loaded = db.load_summaries().unwrap();
+        let loaded = db.load_summaries().unwrap().sessions;
         assert_eq!(
             loaded[0].status,
             crate::observer::model::SessionStatus::Working
@@ -479,7 +699,7 @@ mod tests {
         // Reopening re-runs `migrate`, which must be a no-op against an
         // already-migrated file and must not lose existing rows.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        assert_eq!(db.load_summaries().unwrap().sessions.len(), 1);
         // Windows keeps the sqlite file locked while the connection is
         // open; drop it before deleting the file.
         drop(db);
@@ -557,7 +777,7 @@ mod tests {
         }
         let removed = db.prune_summaries(90).unwrap();
         assert_eq!(removed, 1);
-        let remaining = db.load_summaries().unwrap();
+        let remaining = db.load_summaries().unwrap().sessions;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "claude_code:fresh");
     }
