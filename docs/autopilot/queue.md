@@ -45,7 +45,7 @@ Terminal: `held` (owner vetoed), `blocked` (review rejected).
 
 ## slice-1 — Issue #18: stop `load_summaries` silently dropping rows
 
-Status: todo
+Status: in-progress
 Issue: [#18](https://github.com/Meerav29/aperture/issues/18) (Phase A)
 Code: `src-tauri/src/observer/db.rs` (`Db::load_summaries`)
 

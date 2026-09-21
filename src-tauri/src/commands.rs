@@ -53,16 +53,50 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
 /// succeeded". A database that silently became unwritable while the app was
 /// idle (nothing changed) won't be caught until there's actually something
 /// new to persist.
+///
+/// It also reports rows the startup `load_summaries` could not deserialize
+/// (issue #18). That is a read-side failure, not a write-side one, so it is
+/// reported alongside the write state rather than replacing it: a cycle can
+/// be writing perfectly well and still be missing history it failed to read.
 fn storage_health(db: &Db, ok: bool) -> crate::observer::model::IntegrationHealth {
     let durable = db.is_durable();
-    let state = if durable && ok { "ok" } else { "degraded" };
-    let detail = if !durable {
-        "in-memory only: database unavailable, history will not survive a restart.".to_string()
-    } else if ok {
-        "SQLite persistence writing normally.".to_string()
+    let unreadable = db.unreadable_summaries();
+    let state = if durable && ok && unreadable == 0 {
+        "ok"
     } else {
-        "SQLite write failed this cycle; running in-memory only until it recovers.".to_string()
+        "degraded"
     };
+    let mut details = Vec::new();
+    if !durable {
+        details.push(
+            "in-memory only: database unavailable, history will not survive a restart.".to_string(),
+        );
+    } else if !ok {
+        details.push(
+            "SQLite write failed this cycle; running in-memory only until it recovers.".to_string(),
+        );
+    }
+    if unreadable > 0 {
+        details.push(format!(
+            "{unreadable} stored session {} could not be read at startup and {} missing from \
+             history; the {} still in the database.",
+            if unreadable == 1 {
+                "summary"
+            } else {
+                "summaries"
+            },
+            if unreadable == 1 { "is" } else { "are" },
+            if unreadable == 1 {
+                "row is"
+            } else {
+                "rows are"
+            },
+        ));
+    }
+    if details.is_empty() {
+        details.push("SQLite persistence writing normally.".to_string());
+    }
+    let detail = details.join(" ");
     crate::observer::model::IntegrationHealth {
         provider: "storage".into(),
         state: state.into(),
@@ -166,7 +200,7 @@ mod tests {
         reconcile_and_persist(&mut observer, &mut store, &db);
 
         assert_eq!(store.snapshot().sessions.len(), 1);
-        let persisted = db.load_summaries().unwrap();
+        let persisted = db.load_summaries().unwrap().sessions;
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].id, "claude_code:r1");
         let cursors = db.load_cursors().unwrap();
@@ -240,13 +274,54 @@ mod tests {
     }
 
     #[test]
+    fn storage_health_reports_summary_rows_that_could_not_be_read() {
+        use crate::observer::db::Db;
+
+        // Issue #18: a startup load that dropped rows must not leave the
+        // health entry reporting a clean "ok". The write path here is
+        // perfectly healthy — durable and succeeding — so "ok" is exactly
+        // what this row said before, over a history missing a session.
+        let root = std::env::temp_dir().join(format!(
+            "aperture-storage-health-unreadable-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("unreadable.db")).unwrap();
+        db.insert_raw_summary("claude_code:broken", "{not json at all");
+        let load = db.load_summaries().unwrap();
+        assert_eq!(load.failed.len(), 1);
+
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "degraded");
+        assert!(
+            storage.detail.contains("could not be read"),
+            "expected the unreadable-rows detail, got: {}",
+            storage.detail
+        );
+        assert!(
+            storage.detail.contains("still in the database"),
+            "the detail must say the rows were kept, not deleted: {}",
+            storage.detail
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn reconcile_and_persist_writes_nothing_new_when_nothing_changed() {
         use crate::observer::db::Db;
 
-        let root = std::env::temp_dir().join(format!(
-            "aperture-noop-reconcile-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("aperture-noop-reconcile-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("s.jsonl");
         let line = serde_json::json!({
@@ -263,7 +338,7 @@ mod tests {
         let cursor_path = path.to_string_lossy().into_owned();
 
         reconcile_and_persist(&mut observer, &mut store, &db);
-        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        assert_eq!(db.load_summaries().unwrap().sessions.len(), 1);
         let updated_at_after_first = db.summary_updated_at("claude_code:noop").unwrap();
         let cursor_updated_at_after_first = db.cursor_updated_at(&cursor_path).unwrap();
 

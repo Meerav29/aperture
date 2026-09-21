@@ -53,8 +53,11 @@ pub fn run() {
     let _ = db.prune_summaries(SUMMARY_RETENTION_DAYS);
 
     let mut store = Store::default();
-    if let Ok(sessions) = db.load_summaries() {
-        store.restore_summaries(sessions);
+    // `load_summaries` logs and counts rows it could not read; the count
+    // stays on `Db` so `commands::storage_health` keeps reporting it long
+    // after this one-shot startup load.
+    if let Ok(load) = db.load_summaries() {
+        store.restore_summaries(load.sessions);
     }
 
     let mut observer = Observer::default();

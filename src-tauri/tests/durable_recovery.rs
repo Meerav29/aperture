@@ -64,7 +64,13 @@ fn restart_resumes_cursors_without_duplicating_or_losing_sessions() {
     let mut observer = Observer::new(claude_root.clone(), root.join("codex-unused"));
     observer.restore_cursors(db.load_cursors().unwrap());
     let mut store = Store::default();
-    store.restore_summaries(db.load_summaries().unwrap());
+    let load = db.load_summaries().unwrap();
+    assert!(
+        load.failed.is_empty(),
+        "a real restart must read back every row this build wrote: {:?}",
+        load.failed
+    );
+    store.restore_summaries(load.sessions);
 
     let restored = &store.snapshot().sessions[0];
     assert!(!restored.live, "a restored session must never start out live");
