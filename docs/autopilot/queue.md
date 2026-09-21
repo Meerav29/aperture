@@ -45,9 +45,10 @@ Terminal: `held` (owner vetoed), `blocked` (review rejected).
 
 ## slice-1 — Issue #18: stop `load_summaries` silently dropping rows
 
-Status: in-review
+Status: merged
 Issue: [#18](https://github.com/Meerav29/aperture/issues/18) (Phase A)
-PR: [#33](https://github.com/Meerav29/aperture/pull/33)
+PR: [#33](https://github.com/Meerav29/aperture/pull/33) — merged to `auto/queue`
+2026-09-21 as `185dbab`.
 Code: `src-tauri/src/observer/db.rs` (`Db::load_summaries`)
 
 **This one goes first for a reason.** The issue argues that `Session`'s shape
