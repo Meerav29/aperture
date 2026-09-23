@@ -77,8 +77,18 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: todo
+Status: blocked — review rejected PR #41 on acceptance criterion 2.
+Needs an owner decision, not a rebuild. Evicted sessions do stay in SQLite,
+but they become unreachable from the UI: the only surface that renders history
+today is the startup restore in `lib.rs`, which this slice filters, and
+`Db::load_summaries` has no other non-test caller. Sessions aged 14–90 days —
+inside retention, shown as `history_only` cards today — would stop appearing
+anywhere. The queue's own prose below places history views in Phase C, so the
+criterion and the plan are in tension and resolving that is the owner's call.
+See the review on #41 for the three ways out.
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
+PR: [#41](https://github.com/Meerav29/aperture/pull/41) — open against
+`auto/queue`, not merged.
 Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
 
 The roadmap proposes the rule: a session with no observation for **14 days**
