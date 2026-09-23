@@ -9,11 +9,39 @@
 
 use std::collections::HashMap;
 
-use chrono::Utc;
+use chrono::{DateTime, Duration, Utc};
 
 use super::hook_payload::HookPayload;
 use super::model::{Host, Session, SessionStatus, Snapshot};
 use super::transcript::TranscriptSummary;
+
+/// A session with no observation for this long stops being tracked in the
+/// live in-memory store (issue #17, the rule proposed in `docs/roadmap.md`
+/// Phase A item 1).
+///
+/// This is an eviction threshold, not a deletion one. The session's SQLite
+/// summary row is left exactly where it is, still subject to the separate
+/// 90-day `Db::prune_summaries` retention, so nothing observed inside the
+/// retention window is lost — it stops being carried in memory and in the
+/// dashboard's live view.
+///
+/// Two neighbouring numbers this deliberately is not: the 60-second
+/// staleness downgrade in `Store::snapshot` (a freshness label, not a
+/// lifetime) and the 7-day normalized-activity retention in
+/// `docs/specification.md` (raw activity records, not session summaries).
+/// 14 days is far enough past the 60-second liveness window that eviction
+/// can never touch a session anything currently claims is live.
+pub const LIVE_STORE_IDLE_DAYS: i64 = 14;
+
+/// Whether `s` has gone unobserved for longer than `max_idle` as of `now`.
+///
+/// `last_event_at` is the only timestamp that means "we saw something",
+/// which is what the policy is about: a session whose transcript is still
+/// being appended to keeps a fresh `last_event_at` through
+/// `passive::apply` and can never age out while it is in use.
+fn idle_past(s: &Session, now: DateTime<Utc>, max_idle: Duration) -> bool {
+    now - s.last_event_at > max_idle
+}
 
 #[derive(Default)]
 pub struct Store {
@@ -24,6 +52,16 @@ pub struct Store {
     pub(crate) sessions: HashMap<String, Session>,
     pub hooks_installed: bool,
     pub listener_port: u16,
+    /// How many sessions have left (or never entered) the live store under
+    /// the idle policy since this process started, counting both
+    /// `evict_idle` and rows `restore_summaries` declined to admit.
+    ///
+    /// A session dropping off the dashboard with no explanation reads
+    /// exactly like the missed session the Phase A dogfood log exists to
+    /// catch, so `commands::storage_health` reports this count and says the
+    /// summaries were kept. It counts events, not distinct sessions: one
+    /// that ages out, is resumed, and ages out again counts twice.
+    pub evicted_idle: usize,
 }
 
 impl Store {
@@ -175,12 +213,53 @@ impl Store {
         self.revision += 1;
     }
 
+    /// Drop every session with no observation in `max_idle`, returning the
+    /// ids removed. This is the caller `Store::remove` never had: issue #17
+    /// is that the method exists and nothing in the reconcile path calls it,
+    /// so `Store.sessions` grows for the life of the process. Wired into
+    /// `commands::reconcile_and_persist`, after the summaries are written.
+    ///
+    /// Eviction is not deletion. The SQLite summary row survives — that is
+    /// the whole point of running this after the save — and a session whose
+    /// transcript is appended to again is re-admitted by the next
+    /// `Observer::poll` with a fresh `last_event_at`.
+    pub fn evict_idle(&mut self, now: DateTime<Utc>, max_idle: Duration) -> Vec<String> {
+        let idle: Vec<String> = self
+            .sessions
+            .values()
+            .filter(|s| idle_past(s, now, max_idle))
+            .map(|s| s.id.clone())
+            .collect();
+        for id in &idle {
+            self.remove(id);
+        }
+        self.evicted_idle += idle.len();
+        idle
+    }
+
     /// Seed the store from persisted history on startup. Never trust a
     /// persisted `live` claim: force it false and downgrade a "recent"
     /// observation to "stale" so nothing is presented as currently live
     /// before the first post-restart reconcile.
-    pub fn restore_summaries(&mut self, sessions: Vec<Session>) {
+    ///
+    /// Rows already past the idle threshold are counted and skipped rather
+    /// than admitted. `prune_summaries` keeps 90 days of history but the
+    /// live store keeps `max_idle`, so without this the store would open at
+    /// the size of the whole retention window and then shed most of it
+    /// seconds later on the first reconcile — a visible flicker, and a
+    /// startup working set proportional to total historical session count,
+    /// which is the growth issue #17 is about.
+    pub fn restore_summaries(
+        &mut self,
+        sessions: Vec<Session>,
+        now: DateTime<Utc>,
+        max_idle: Duration,
+    ) {
         for mut s in sessions {
+            if idle_past(&s, now, max_idle) {
+                self.evicted_idle += 1;
+                continue;
+            }
             s.live = false;
             if s.observation == "recent" {
                 s.observation = "stale".into();
@@ -277,7 +356,7 @@ mod tests {
         history.live = true; // a persisted bug/edge case; must still be forced false
         history.observation = "history_only".into();
 
-        st.restore_summaries(vec![recent, history]);
+        st.restore_summaries(vec![recent, history], Utc::now(), max_idle());
 
         let a = &st.sessions["claude_code:a"];
         assert!(!a.live);
@@ -285,5 +364,107 @@ mod tests {
         let b = &st.sessions["codex:b"];
         assert!(!b.live);
         assert_eq!(b.observation, "history_only");
+    }
+
+    fn max_idle() -> Duration {
+        Duration::days(LIVE_STORE_IDLE_DAYS)
+    }
+
+    fn session_last_seen(id: &str, at: DateTime<Utc>) -> Session {
+        Session::new(id.into(), "/repo".into(), at)
+    }
+
+    #[test]
+    fn evict_idle_drops_sessions_past_the_cutoff_and_keeps_the_rest() {
+        let now = Utc::now();
+        let mut st = Store::default();
+        for (id, idle_for) in [
+            ("claude_code:ancient", Duration::days(90)),
+            ("claude_code:just_past", max_idle() + Duration::minutes(1)),
+            ("claude_code:just_inside", max_idle() - Duration::minutes(1)),
+            ("codex:fresh", Duration::zero()),
+        ] {
+            let s = session_last_seen(id, now - idle_for);
+            st.sessions.insert(s.id.clone(), s);
+        }
+
+        let mut evicted = st.evict_idle(now, max_idle());
+        evicted.sort();
+
+        assert_eq!(evicted, ["claude_code:ancient", "claude_code:just_past"]);
+        let mut kept: Vec<&str> = st.sessions.keys().map(String::as_str).collect();
+        kept.sort();
+        assert_eq!(kept, ["claude_code:just_inside", "codex:fresh"]);
+        assert_eq!(st.evicted_idle, 2, "the count the health row reports");
+    }
+
+    #[test]
+    fn a_session_observed_now_is_never_evicted() {
+        // The safety property the threshold rests on: `snapshot` only calls a
+        // session live within 60 seconds of `last_event_at`, so a cutoff of
+        // days cannot remove anything the dashboard claims is live. Asserted
+        // rather than assumed, because shrinking the constant to something
+        // near the liveness window would silently break it.
+        let now = Utc::now();
+        let mut st = Store::default();
+        let mut live = session_last_seen("claude_code:live", now);
+        live.live = true;
+        live.observation = "recent".into();
+        st.sessions.insert(live.id.clone(), live);
+
+        assert!(st.evict_idle(now, max_idle()).is_empty());
+        assert!(st.snapshot().sessions[0].live);
+    }
+
+    #[test]
+    fn the_live_store_stays_bounded_across_many_reconcile_cycles() {
+        // Issue #17's regression test: one new session per simulated
+        // reconcile, a day apart, for far longer than the idle window. Before
+        // eviction was wired in this map only ever grew — it would end at
+        // `CYCLES`, and a real long-running process would do the same thing
+        // with every session it had ever observed.
+        const CYCLES: i64 = 365;
+        let start = Utc::now() - Duration::days(CYCLES);
+        let mut st = Store::default();
+
+        for cycle in 0..CYCLES {
+            let now = start + Duration::days(cycle);
+            let s = session_last_seen(&format!("claude_code:s{cycle}"), now);
+            st.sessions.insert(s.id.clone(), s);
+            st.evict_idle(now, max_idle());
+            assert!(
+                st.sessions.len() <= LIVE_STORE_IDLE_DAYS as usize + 1,
+                "cycle {cycle}: {} sessions resident",
+                st.sessions.len()
+            );
+        }
+
+        assert_eq!(st.evicted_idle as i64, CYCLES - LIVE_STORE_IDLE_DAYS - 1);
+        assert!(
+            (st.sessions.len() as i64) < CYCLES,
+            "the store must not be proportional to total sessions observed"
+        );
+    }
+
+    #[test]
+    fn restore_admits_only_sessions_inside_the_idle_window() {
+        // `prune_summaries` keeps 90 days; the live store keeps 14. Restoring
+        // all 90 days and evicting on the first reconcile would reach the
+        // same steady state seconds later, but the startup working set — and
+        // the first snapshot the window is painted from — would still be
+        // proportional to the full history.
+        let now = Utc::now();
+        let mut st = Store::default();
+        let old = session_last_seen("claude_code:old", now - Duration::days(60));
+        let recent = session_last_seen("codex:recent", now - Duration::days(1));
+
+        st.restore_summaries(vec![old, recent], now, max_idle());
+
+        assert_eq!(st.sessions.len(), 1);
+        assert!(st.sessions.contains_key("codex:recent"));
+        assert_eq!(
+            st.evicted_idle, 1,
+            "the skipped row is reported, not hidden"
+        );
     }
 }

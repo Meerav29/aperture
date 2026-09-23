@@ -56,8 +56,17 @@ pub fn run() {
     // `load_summaries` logs and counts rows it could not read; the count
     // stays on `Db` so `commands::storage_health` keeps reporting it long
     // after this one-shot startup load.
+    //
+    // Retention keeps 90 days of summaries on disk but the live store keeps
+    // `LIVE_STORE_IDLE_DAYS`, so most of that history is deliberately not
+    // admitted here (issue #17). `Store` counts what it skipped and the
+    // storage health entry reports it.
     if let Ok(load) = db.load_summaries() {
-        store.restore_summaries(load.sessions);
+        store.restore_summaries(
+            load.sessions,
+            Utc::now(),
+            chrono::Duration::days(observer::state::LIVE_STORE_IDLE_DAYS),
+        );
     }
 
     let mut observer = Observer::default();

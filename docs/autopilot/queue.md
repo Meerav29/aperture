@@ -77,7 +77,7 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: todo
+Status: in-progress
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
 Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
 
