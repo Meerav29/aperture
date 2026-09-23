@@ -100,7 +100,7 @@ Blast radius: `src-tauri/src/observer/db.rs`, `src-tauri/src/commands.rs`
              migration change — `SELECT id, data` reads a column migration 1
              already created.
 
-## 2026-09-23 — slice-2, PR #34
+## 2026-09-23 — slice-2, PR #41
 Question:    Issue #17 lists three candidate eviction policies (age-based, a
              bounded LRU-style cap, or hiding from the default view) and does
              not choose. `docs/roadmap.md` Phase A item 1 proposes 14 days as
@@ -145,7 +145,7 @@ Blast radius: `src-tauri/src/observer/state.rs` (new `evict_idle`, a filter in
              Fully reversible: set `LIVE_STORE_IDLE_DAYS` arbitrarily high and
              the behavior is the old one, since nothing is ever deleted.
 
-## 2026-09-23 — slice-2, PR #34
+## 2026-09-23 — slice-2, PR #41
 Question:    Where in the reconcile cycle does eviction run? The issue says
              "wire `Store::remove` into the reconcile path" without saying
              where, and the two obvious positions are not equivalent.

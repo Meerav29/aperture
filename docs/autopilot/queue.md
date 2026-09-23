@@ -77,9 +77,15 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: in-progress
+Status: in-review
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
-Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
+PR: [#41](https://github.com/Meerav29/aperture/pull/41) — open against
+`auto/queue`. One criterion is deliberately left **unchecked**: evicted
+sessions are kept in SQLite and counted in the storage health row, but the
+history view that would make them *visible* is issue #11, Phase C. The PR body
+says so rather than reading the criterion as satisfied by retrievable data.
+Code: `src-tauri/src/observer/state.rs` (`Store::remove`, now called by
+`Store::evict_idle` from `commands::reconcile_and_persist`)
 
 The roadmap proposes the rule: a session with no observation for **14 days**
 leaves the live store but stays in SQLite and returns through history views in
