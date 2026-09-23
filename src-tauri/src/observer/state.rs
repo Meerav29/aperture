@@ -52,16 +52,24 @@ pub struct Store {
     pub(crate) sessions: HashMap<String, Session>,
     pub hooks_installed: bool,
     pub listener_port: u16,
-    /// How many sessions have left (or never entered) the live store under
-    /// the idle policy since this process started, counting both
-    /// `evict_idle` and rows `restore_summaries` declined to admit.
+    /// How many sessions `evict_idle` has removed from the live store since
+    /// this process started. Counts removals, not distinct sessions: one
+    /// that ages out, is resumed, and ages out again counts twice.
     ///
     /// A session dropping off the dashboard with no explanation reads
     /// exactly like the missed session the Phase A dogfood log exists to
-    /// catch, so `commands::storage_health` reports this count and says the
-    /// summaries were kept. It counts events, not distinct sessions: one
-    /// that ages out, is resumed, and ages out again counts twice.
+    /// catch, so `commands::storage_health` reports it and says the
+    /// summaries were kept.
     pub evicted_idle: usize,
+    /// How many persisted rows `restore_summaries` declined to admit at
+    /// startup, because they were already past the idle threshold.
+    ///
+    /// Deliberately separate from `evicted_idle`: these never entered the
+    /// live store, so reporting them as having "left the live view" would
+    /// be wrong about the startup half. It is also a one-shot number —
+    /// `restore_summaries` runs once — where `evicted_idle` accumulates for
+    /// the life of the process.
+    pub idle_not_restored: usize,
 }
 
 impl Store {
@@ -257,7 +265,7 @@ impl Store {
     ) {
         for mut s in sessions {
             if idle_past(&s, now, max_idle) {
-                self.evicted_idle += 1;
+                self.idle_not_restored += 1;
                 continue;
             }
             s.live = false;
@@ -463,8 +471,12 @@ mod tests {
         assert_eq!(st.sessions.len(), 1);
         assert!(st.sessions.contains_key("codex:recent"));
         assert_eq!(
-            st.evicted_idle, 1,
+            st.idle_not_restored, 1,
             "the skipped row is reported, not hidden"
+        );
+        assert_eq!(
+            st.evicted_idle, 0,
+            "a row never admitted at startup did not leave the live view"
         );
     }
 }

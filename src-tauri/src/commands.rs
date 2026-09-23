@@ -43,9 +43,13 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     db.forget_cached_summaries(&evicted);
 
     let evicted_idle = store.evicted_idle;
-    store
-        .integrations
-        .push(storage_health(db, summaries_ok && cursors_ok, evicted_idle));
+    let idle_not_restored = store.idle_not_restored;
+    store.integrations.push(storage_health(
+        db,
+        summaries_ok && cursors_ok,
+        evicted_idle,
+        idle_not_restored,
+    ));
 }
 
 /// Synthetic health row reporting whether SQLite persistence succeeded on
@@ -73,15 +77,31 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
 /// reported alongside the write state rather than replacing it: a cycle can
 /// be writing perfectly well and still be missing history it failed to read.
 ///
-/// `evicted_idle` is reported for a different reason again: nothing is wrong,
-/// but sessions have left the live view under issue #17's idle policy, and a
-/// card vanishing with no explanation is indistinguishable from the missed
-/// session the Phase A dogfood log is watching for. So it is stated, and the
-/// state stays `"ok"` — a working policy is not a degradation.
+/// `evicted_idle` and `idle_not_restored` are reported for a different reason
+/// again: nothing is wrong, but sessions are absent from the live view under
+/// issue #17's idle policy, and a card vanishing with no explanation is
+/// indistinguishable from the missed session the Phase A dogfood log is
+/// watching for. So they are stated, and the state stays `"ok"` — a working
+/// policy is not a degradation.
+///
+/// They are two clauses rather than one sum because they are not the same
+/// event: `evicted_idle` counts sessions that were in the live view and left
+/// it, `idle_not_restored` counts stored rows that were never admitted at
+/// startup. Adding them and calling the total "left the live view" would be
+/// wrong about the second group.
+fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 {
+        one
+    } else {
+        many
+    }
+}
+
 fn storage_health(
     db: &Db,
     ok: bool,
     evicted_idle: usize,
+    idle_not_restored: usize,
 ) -> crate::observer::model::IntegrationHealth {
     let durable = db.is_durable();
     let unreadable = db.unreadable_summaries();
@@ -120,20 +140,23 @@ fn storage_health(
     if details.is_empty() {
         details.push("SQLite persistence writing normally.".to_string());
     }
+    // Two separate counts, deliberately not summed: one names sessions that
+    // were in the live view and left it, the other names stored rows that
+    // were never admitted at startup. Reporting the total as "left the live
+    // view" would be wrong about the second group.
     if evicted_idle > 0 {
         details.push(format!(
             "{evicted_idle} {} no observation in {LIVE_STORE_IDLE_DAYS} days and left the live \
              view; the {} still in the database.",
-            if evicted_idle == 1 {
-                "session had"
-            } else {
-                "sessions had"
-            },
-            if evicted_idle == 1 {
-                "summary is"
-            } else {
-                "summaries are"
-            },
+            plural(evicted_idle, "session had", "sessions had"),
+            plural(evicted_idle, "summary is", "summaries are"),
+        ));
+    }
+    if idle_not_restored > 0 {
+        details.push(format!(
+            "{idle_not_restored} stored {} not shown at startup, after \
+             {LIVE_STORE_IDLE_DAYS} days with no observation; still in the database.",
+            plural(idle_not_restored, "summary was", "summaries were"),
         ));
     }
     let detail = details.join(" ");
@@ -446,6 +469,54 @@ mod tests {
             storage.detail.contains("still in the database"),
             "the detail must say the summary was kept, not deleted: {}",
             storage.detail
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn health_does_not_report_a_startup_skipped_row_as_having_left_the_live_view() {
+        use crate::observer::db::Db;
+
+        // A row `restore_summaries` declined to admit was never in the live
+        // view, so folding it into the "left the live view" count would
+        // describe it wrongly. Both absences are reported; they are separate
+        // sentences because they are separate events.
+        let root = std::env::temp_dir().join(format!(
+            "aperture-health-startup-skip-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("skip.db")).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+
+        let old = Session::new(
+            "claude_code:old".into(),
+            "/repo".into(),
+            Utc::now() - Duration::days(60),
+        );
+        store.restore_summaries(vec![old], Utc::now(), Duration::days(LIVE_STORE_IDLE_DAYS));
+        assert_eq!(store.idle_not_restored, 1);
+        assert_eq!(store.evicted_idle, 0);
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let detail = &store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present")
+            .detail;
+        assert!(
+            detail.contains("not shown at startup"),
+            "the startup-skipped row must still be reported: {detail}"
+        );
+        assert!(
+            !detail.contains("left the live view"),
+            "a row that never entered the live view must not be said to have \
+             left it: {detail}"
         );
 
         drop(db);
