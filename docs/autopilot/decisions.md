@@ -179,53 +179,41 @@ Blast radius: `src-tauri/src/commands.rs` (`reconcile_and_persist`, ordering
              when an evicted session is resumed.
 
 ## 2026-09-23 — slice-2, PR #41 (correction, after review)
-Question:    Not a spec gap — a correction. The review of PR #41 found that
-             one counter was being used for two different events, and that
-             the build routine's own account of the blocking criterion was
-             weaker than the truth. Recorded here because the first draft of
-             this slice shipped both, and a reader comparing the PR body to
-             the code deserves to know which parts were wrong.
+Question:    Not a spec gap — a correction. The review of PR #41 found one
+             counter standing for two different events, and the build
+             routine's account of the blocking criterion weaker than the truth.
 Chosen:      (a) Split `Store.evicted_idle` into `evicted_idle` (sessions
              `evict_idle` removed from the live store) and
-             `idle_not_restored` (persisted rows `restore_summaries`
-             declined to admit at startup). The health entry now states them
-             as two clauses. The single cumulative counter rendered both as
-             "N sessions had no observation in 14 days and left the live
-             view", which is wrong about the startup group: those rows never
-             entered the live view to leave it. `commands::tests::
+             `idle_not_restored` (rows `restore_summaries` declined to admit
+             at startup), reported as two clauses. One cumulative counter
+             rendered both as "N sessions ... left the live view", wrong
+             about the startup group: those rows never entered the live view
+             to leave it. They also differ in lifetime — `idle_not_restored`
+             is one-shot, `evicted_idle` accumulates. `commands::tests::
              health_does_not_report_a_startup_skipped_row_as_having_left_the_
-             live_view` pins the distinction.
-             (b) The PR body's reason for leaving acceptance criterion 2
-             unchecked said "there is no history view to be visible in",
-             pointing at issue #11 and Phase C. That understated the loss.
-             Verified in the code rather than taken from the review: a
-             history surface does exist today — `Store::restore_summaries`
-             admits every persisted row at startup as `history_only` with
-             `live = false`, and `lib.rs` pushes that snapshot before the
-             first reconcile specifically so the window shows prior context.
+             live_view` pins it.
+             (b) The PR body said criterion 2 failed because "there is no
+             history view to be visible in" (issue #11, Phase C). That
+             understated it. Verified in the code, not taken from the review:
+             `restore_summaries` admits every persisted row at startup as
+             `history_only`, and `lib.rs` pushes that snapshot before the
+             first reconcile so the window shows prior context. And
              `Db::load_summaries` has exactly one non-test caller (that
-             restore), and none of the four commands in `invoke_handler`
-             reads persisted summaries. So a session this slice evicts is
-             not merely absent from a view that does not exist yet; it is
-             unreachable from any code path in the app. Sessions aged 14–90
-             days, inside `prune_summaries` retention, go from rendered as
-             `history_only` cards to rendered nowhere. The PR body now says
-             that instead.
-Rejected:    Summing the two counters and softening the sentence to "are not
-             in the live view", which would have been true of both groups but
-             would have hidden that they are different events with different
-             lifetimes — `idle_not_restored` is one-shot, `evicted_idle`
-             accumulates for the life of the process.
-             On (b), rejected leaving the weaker wording on the grounds that
-             the criterion was already unchecked so the conclusion was
-             unchanged. The conclusion was, but the owner is choosing between
-             three options on the strength of that paragraph, and an
-             understated regression is the same failure this repo's honesty
-             rule exists to stop — it just points the other way.
-Blast radius: `src-tauri/src/observer/state.rs` (one field split in two),
+             restore) — no command in `invoke_handler` reads persisted
+             summaries. So an evicted session is not merely absent from a
+             view that does not exist yet — it is unreachable from any code
+             path in the app, and sessions aged 14–90 days go from rendered
+             as `history_only` cards to rendered nowhere. The PR body now
+             says that.
+Rejected:    Summing the counters under "are not in the live view" — true of
+             both, but it hides that they are different events. On (b),
+             keeping the weaker wording because the criterion was unchecked
+             either way: the owner picks between three options on the
+             strength of that paragraph, and an understated regression is the
+             failure the honesty rule exists to stop, pointing the other way.
+Blast radius: `src-tauri/src/observer/state.rs` (one field split in two) and
              `src-tauri/src/commands.rs` (`storage_health` signature, the
              detail strings, a `plural` helper, one new test). No schema,
-             migration or frontend change; `Session` and `Snapshot` are still
-             untouched. The eviction policy itself is unchanged — this
-             corrects how it is *reported*, not what it does, so it does not
-             address the blocking criterion and is not meant to.
+             migration or frontend change. Corrects how the policy is
+             *reported*, not what it does, so it does not address the
+             blocking criterion.
