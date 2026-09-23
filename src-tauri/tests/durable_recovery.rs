@@ -70,7 +70,11 @@ fn restart_resumes_cursors_without_duplicating_or_losing_sessions() {
         "a real restart must read back every row this build wrote: {:?}",
         load.failed
     );
-    store.restore_summaries(load.sessions);
+    store.restore_summaries(
+        load.sessions,
+        chrono::Utc::now(),
+        chrono::Duration::days(aperture_lib::observer::state::LIVE_STORE_IDLE_DAYS),
+    );
 
     let restored = &store.snapshot().sessions[0];
     assert!(!restored.live, "a restored session must never start out live");

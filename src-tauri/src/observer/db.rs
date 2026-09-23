@@ -224,6 +224,29 @@ impl Db {
         Ok(out)
     }
 
+    /// Drop the cached "last written" copy of each id, without touching the
+    /// stored rows.
+    ///
+    /// `summary_cache` holds a serialized `Session` per id so `save_summaries`
+    /// can skip rows whose content has not changed. That cache is keyed by
+    /// every session ever written this process, so bounding `Store.sessions`
+    /// (issue #17) without bounding this would move the growth rather than
+    /// remove it — the cached JSON is larger than the `Session` it stands for.
+    ///
+    /// Forgetting an id is always safe — a cache miss makes the next save
+    /// write the row rather than skip it, so the worst case is one redundant
+    /// write when an evicted session is resumed. It is never a way to delete:
+    /// the row itself is untouched and `load_summaries` still returns it.
+    pub fn forget_cached_summaries(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().expect("db lock");
+        for id in ids {
+            guard.summary_cache.remove(id);
+        }
+    }
+
     /// How many rows the most recent `load_summaries` could not deserialize,
     /// for the storage health entry. Zero before any load.
     pub fn unreadable_summaries(&self) -> usize {
@@ -624,6 +647,32 @@ mod tests {
         let b_after = db.summary_updated_at("claude_code:b").unwrap();
         assert_eq!(a_before, a_after, "unchanged row a must not be rewritten");
         assert_ne!(b_before, b_after, "changed row b must be rewritten");
+    }
+
+    #[test]
+    fn forgetting_a_cached_summary_keeps_the_row_and_only_costs_a_rewrite() {
+        // The cache is what `save_summaries` checks before writing, so
+        // dropping an entry is observable exactly one way: the next save of
+        // identical content stops being skipped. The row must be unchanged.
+        let db = Db::in_memory();
+        let s = sample_session("claude_code:a");
+        db.save_summaries(&[s.clone()]).unwrap();
+        let before = db.summary_updated_at("claude_code:a").unwrap();
+
+        db.forget_cached_summaries(&["claude_code:a".to_string()]);
+
+        assert_eq!(
+            db.load_summaries().unwrap().sessions.len(),
+            1,
+            "forgetting the cache entry must not delete the stored row"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.save_summaries(&[s]).unwrap();
+        assert_ne!(
+            before,
+            db.summary_updated_at("claude_code:a").unwrap(),
+            "a forgotten id must no longer be skipped as unchanged"
+        );
     }
 
     #[test]
