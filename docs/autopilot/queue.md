@@ -77,16 +77,12 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: in-review — owner decision 2026-09-26: option 1 from the review on
-#41. Criterion 2 is reworded below to its durability half; re-review #41
-against the new wording. The rejected wording required evicted sessions to stay
-*visible*, but no history view exists yet, so sessions aged 14–90 days leave
-the UI until one does. The owner accepts that gap for Phase A. Rendering
-history from the durable summaries moves to #11 (Phase C, "active/history/hidden
-views"), where the roadmap already places it.
+Status: merged
+PR: [#41](https://github.com/Meerav29/aperture/pull/41) — merged to `auto/queue`
+by the owner 2026-09-27 as `37a0e03`, after criterion 2 was reworded to its
+durability half (owner decision 2026-09-26, option 1 from the review on #41).
+Making evicted sessions visible in a history view moved to #11.
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
-PR: [#41](https://github.com/Meerav29/aperture/pull/41) — open against
-`auto/queue`, not merged.
 Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
 
 The roadmap proposes the rule: a session with no observation for **14 days**
