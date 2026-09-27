@@ -77,15 +77,13 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: blocked — review rejected PR #41 on acceptance criterion 2.
-Needs an owner decision, not a rebuild. Evicted sessions do stay in SQLite,
-but they become unreachable from the UI: the only surface that renders history
-today is the startup restore in `lib.rs`, which this slice filters, and
-`Db::load_summaries` has no other non-test caller. Sessions aged 14–90 days —
-inside retention, shown as `history_only` cards today — would stop appearing
-anywhere. The queue's own prose below places history views in Phase C, so the
-criterion and the plan are in tension and resolving that is the owner's call.
-See the review on #41 for the three ways out.
+Status: in-review — owner decision 2026-09-26: option 1 from the review on
+#41. Criterion 2 is reworded below to its durability half; re-review #41
+against the new wording. The rejected wording required evicted sessions to stay
+*visible*, but no history view exists yet, so sessions aged 14–90 days leave
+the UI until one does. The owner accepts that gap for Phase A. Rendering
+history from the durable summaries moves to #11 (Phase C, "active/history/hidden
+views"), where the roadmap already places it.
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
 PR: [#41](https://github.com/Meerav29/aperture/pull/41) — open against
 `auto/queue`, not merged.
@@ -96,12 +94,15 @@ leaves the live store but stays in SQLite and returns through history views in
 Phase C. Use that unless the code makes it untenable; if it does, say so and
 record the alternative.
 
-Acceptance (from the issue — do not weaken):
+Acceptance (from the issue — do not weaken; criterion 2 reworded by the owner
+on 2026-09-26, see Status):
 
 - [ ] A documented, tested policy bounds `Store.sessions` independent of total
       historical session count.
-- [ ] **Evicted sessions remain visible in history**, backed by the durable
-      SQLite summaries. Eviction from memory is not deletion.
+- [ ] **Eviction from memory is not deletion.** An evicted session's summary
+      row stays in SQLite, and a test proves it is still there after eviction.
+      Making evicted sessions visible in a history view is #11's job, not this
+      slice's.
 - [ ] A regression test proves `Store.sessions` does not grow unbounded across
       many simulated reconcile cycles with aging sessions.
 - [ ] `Store::remove` (or equivalent) is actually wired into the reconcile path
