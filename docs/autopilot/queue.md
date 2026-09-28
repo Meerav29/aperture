@@ -113,11 +113,27 @@ in principle* is this slice's bar.
 
 ## slice-3 — Issue #20: multi-step migration test coverage
 
-Status: in-review
-PR: [#56](https://github.com/Meerav29/aperture/pull/56) — open against
-`auto/queue`.
+Status: merged
 Issue: [#20](https://github.com/Meerav29/aperture/issues/20)
+PR: [#56](https://github.com/Meerav29/aperture/pull/56) — merged to `auto/queue`
+by the review routine 2026-09-28 as `9f604ed`.
 Code: `src-tauri/src/observer/db.rs` (`migrate`, `MIGRATIONS`)
+
+Both criteria were verified against the diff, and both of the PR's mutation
+claims were reproduced independently rather than taken on trust: with
+`.skip(version)` removed from `migrate`'s loop only
+`a_second_migration_applies_on_top_of_an_already_migrated_database` fails, and
+with `BEGIN;`/`COMMIT;` removed from the per-migration batch only
+`a_failing_second_migration_leaves_an_already_migrated_database_intact` fails.
+Every pre-existing test passes against both breaks, which is issue #20's claim
+confirmed. `cargo test --locked` (65 passed) and `npm run build` were re-run in
+a Linux sandbox; CI was green on `d273162`, `rust` on `windows-latest`.
+
+Carried forward, not fixed here: `migrate` issues no explicit `ROLLBACK` after
+`execute_batch` fails, so the connection is left holding an open transaction and
+the rollback depends on the connection being dropped. Correct for the sole real
+caller (`Db::open`), a trap for any future one. The PR flags it under "Observed,
+not changed" for the owner to file.
 
 Pure test work on the storage layer that slices 1 and 2 both touch. No product
 behavior changes, so it is sequence-neutral and safe to land last.
