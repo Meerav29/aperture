@@ -217,3 +217,74 @@ Blast radius: `src-tauri/src/observer/state.rs` (one field split in two) and
              migration or frontend change. Corrects how the policy is
              *reported*, not what it does, so it does not address the
              blocking criterion.
+
+## 2026-09-28 — slice-3, PR #56
+Question:    Issue #20 asks for a test of "a `0002_*.sql` added later", but
+             `MIGRATIONS` holds exactly one entry and this slice adds no
+             feature that needs a schema change. So where does the second
+             migration come from?
+Chosen:      Synthetic, defined in the test module and passed to the private
+             `migrate(conn, path, migrations)` as the second element of a
+             two-item slice whose first element is the real
+             `MIGRATIONS[0]` (`0001_init.sql`). `migrate` already takes the
+             migration list as a parameter — the existing
+             `a_failed_migration_leaves_the_original_file_byte_identical`
+             uses that seam — so the sequencing under test is the real code
+             path, with only the SQL of step 2 invented. Using the real
+             `0001_init.sql` as step 1 matters: the setup is an actual
+             `user_version = 1` database written by `Db::open` and
+             `save_summaries`, which is the "already-migrated, not fresh"
+             precondition the issue says no existing test reaches.
+Rejected:    Adding a real no-op `0002_*.sql` to `MIGRATIONS` so the const
+             has two entries. It would bump every installed database's
+             `user_version` to 2 for a table nothing reads, ship a schema
+             change whose only purpose is to be tested, and make the next
+             genuine migration `0003`. A test should not put state on a
+             user's disk. Also rejected: hand-writing the post-migration-1
+             file as a fixture, which would let the fixture drift from what
+             `0001_init.sql` actually produces.
+Blast radius: `src-tauri/src/observer/db.rs`, inside `#[cfg(test)] mod tests`
+             only — two `#[test]` functions, two `const &str`, and four
+             helpers (`migration_scratch_dir`, `summary_rows`,
+             `table_exists`, `user_version`). Nothing outside the test module
+             changes, so reverting cannot affect shipped behavior. The tests
+             write under `std::env::temp_dir()` with a process-id-suffixed
+             directory, matching the existing migration tests rather than
+             adding a `tempfile` dependency.
+
+## 2026-09-28 — slice-3, PR #56
+Question:    What shape should the *failing* second migration take? The issue
+             asks only that it be "invalid SQL", and the existing failure test
+             uses `"THIS IS NOT VALID SQL;"` — invalid at its first statement.
+Chosen:      A migration 2 that succeeds at statement 1 (`CREATE TABLE
+             session_labels …`) and fails at statement 2 (an `INSERT` naming a
+             column that does not exist), so the transaction holds uncommitted
+             work at the moment it fails and the rollback has something to
+             undo. Measured rather than assumed: with `BEGIN;`/`COMMIT;`
+             stripped out of `migrate`'s per-migration batch, the existing
+             `a_failed_migration_leaves_the_original_file_byte_identical` and
+             `migrate_commits_user_version_and_schema_together` both still
+             pass, while the new test fails. A migration that dies at its
+             first statement writes nothing whether or not a transaction was
+             ever opened, so it cannot distinguish a working rollback from a
+             missing one.
+Rejected:    Reusing the existing invalid-from-statement-one shape, which
+             would have satisfied the criterion's wording while testing
+             nothing the tree did not already cover. The criterion was not
+             weakened to make this easier — it was read as requiring a
+             rollback, and a migration that cannot exercise one does not
+             prove it.
+
+             Related, and deliberately *not* acted on: `migrate` never issues
+             an explicit `ROLLBACK` after `execute_batch` fails. `BEGIN` has
+             run, so the connection is left holding an open transaction, and
+             the rollback happens only because the connection is dropped.
+             That is correct for the sole real caller (`Db::open` propagates
+             with `?` and drops its local `Connection`), and the new test
+             depends on the same drop with a comment saying so. Adding a
+             `ROLLBACK` would be a behavior change to the function under
+             test, which a test-coverage slice should not smuggle in. Recorded
+             in the PR body under "Observed, not changed" for the owner to
+             file if wanted.
+Blast radius: Same as the entry above — one `const &str` in the test module.
+             No change to `migrate`, `MIGRATIONS`, or any migration SQL.
