@@ -810,6 +810,145 @@ mod tests {
         migrate(&conn, Path::new(":memory:"), MIGRATIONS).unwrap();
     }
 
+    /// Stand-in for the `0002_*.sql` that a later feature will add. `MIGRATIONS`
+    /// holds exactly one entry today, so the two-step upgrade path has no real
+    /// second step to exercise yet; what these tests check is the sequencing
+    /// and rollback contract around it, not this SQL.
+    const SECOND_MIGRATION: &str = "CREATE TABLE session_labels (\n\
+         session_id TEXT PRIMARY KEY,\n\
+         label TEXT NOT NULL\n\
+     );";
+
+    /// A second migration that does real work before it fails, so a rollback
+    /// has something to undo. A migration that is invalid from its first
+    /// statement would pass the rollback assertions even if `migrate` never
+    /// opened a transaction at all.
+    const SECOND_MIGRATION_THAT_FAILS: &str = "CREATE TABLE session_labels (\n\
+         session_id TEXT PRIMARY KEY,\n\
+         label TEXT NOT NULL\n\
+     );\n\
+     INSERT INTO session_labels (session_id, no_such_column) VALUES ('x', 1);";
+
+    fn migration_scratch_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aperture-db-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Every `(id, data, updated_at)` row in `session_summaries`, so a test can
+    /// assert migration 1's rows are byte-for-byte untouched rather than merely
+    /// still countable.
+    fn summary_rows(conn: &Connection) -> Vec<(String, String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT id, data, updated_at FROM session_summaries ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        count == 1
+    }
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_second_migration_applies_on_top_of_an_already_migrated_database() {
+        // The realistic upgrade path, which no existing test covers: a file a
+        // previous run already brought to `user_version = 1` and wrote rows
+        // into, opened by a build whose `MIGRATIONS` has grown a second entry.
+        let dir = migration_scratch_dir("upgrade");
+        let path = dir.join("upgrade.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_summaries(&[sample_session("claude_code:a")]).unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            user_version(&conn),
+            1,
+            "setup must leave an already-migrated file, not a fresh one"
+        );
+        let before = summary_rows(&conn);
+        assert_eq!(before.len(), 1, "setup must leave migration 1 with rows in it");
+
+        migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION]).unwrap();
+
+        // Only migration 2 ran. Had `migrate` re-applied migration 1, the
+        // `CREATE TABLE session_summaries` in `0001_init.sql` would have failed
+        // above with "table already exists".
+        assert_eq!(user_version(&conn), 2);
+        assert!(table_exists(&conn, "session_labels"), "migration 2's schema is missing");
+        assert_eq!(summary_rows(&conn), before, "migration 1's rows were disturbed");
+
+        // Windows keeps the sqlite file locked while the connection is open.
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_second_migration_leaves_an_already_migrated_database_intact() {
+        // Same setup as above, but migration 2 fails partway. The file must be
+        // left at the post-migration-1 state — its last successfully committed
+        // version, with its rows — and not at a fresh-file state.
+        let dir = migration_scratch_dir("rollback");
+        let path = dir.join("rollback.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_summaries(&[sample_session("claude_code:a")]).unwrap();
+        }
+        let post_migration_1 = std::fs::read(&path).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let before = summary_rows(&conn);
+        let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
+        assert!(result.is_err(), "an invalid migration 2 must surface as an error");
+        // Closing the connection rolls back the still-open transaction, which
+        // is what `Db::open` does when `migrate` returns `Err`.
+        drop(conn);
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            post_migration_1,
+            "the file must be byte-identical to the post-migration-1 state"
+        );
+
+        // `migrate`'s documented backup contract: `<path>.bak` holds the state
+        // the file was in before the first pending migration.
+        let backup = PathBuf::from(format!("{}.bak", path.display()));
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            post_migration_1,
+            "the backup must hold the post-migration-1 state"
+        );
+
+        // And the file is still usable at version 1, with migration 1's rows.
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(user_version(&conn), 1);
+        assert!(
+            !table_exists(&conn, "session_labels"),
+            "migration 2's half-applied schema survived the rollback"
+        );
+        assert_eq!(summary_rows(&conn), before);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn prune_removes_only_old_summaries() {
         let db = Db::in_memory();
