@@ -113,7 +113,7 @@ in principle* is this slice's bar.
 
 ## slice-3 — Issue #20: multi-step migration test coverage
 
-Status: todo
+Status: in-progress
 Issue: [#20](https://github.com/Meerav29/aperture/issues/20)
 Code: `src-tauri/src/observer/db.rs` (`migrate`, `MIGRATIONS`)
 
