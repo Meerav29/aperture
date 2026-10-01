@@ -150,6 +150,48 @@ Acceptance (from the issue — do not weaken):
 
 ---
 
+## slice-4 — Issue #30: run `prune_summaries` during a long-running process
+
+Status: todo
+Issue: [#30](https://github.com/Meerav29/aperture/issues/30)
+Code: `src-tauri/src/observer/db.rs` (`prune_summaries`), startup/reconcile wiring
+
+Queued 2026-10-01 after the queue ran dry. Storage-layer correctness in the same
+area as slices 1-3; no host evidence needed. Acceptance is in the issue; do not
+weaken it. At minimum: retention runs on a schedule or reconcile cadence, not
+only once at startup, and a test proves rows older than the window are pruned
+by the periodic path. `cargo test` and `npm run build` must pass.
+
+---
+
+## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
+
+Status: todo
+Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
+Code: `src-tauri/src/lib.rs` (reconcile loop)
+
+Set an explicit `MissedTickBehavior` and prove with a paused-clock test that a
+long gap yields one reconcile, not a storm. Do not claim real sleep/wake
+behavior is validated; that is host evidence (see binding constraints). Issue
+#54 (misleading "forcing full reconciliation" log) touches the same lines; fix
+the log message only if it falls out of the change, and say so in the PR.
+
+---
+
+## slice-6 — Issue #50: `storage_health` discards the real error
+
+Status: todo
+Issue: [#50](https://github.com/Meerav29/aperture/issues/50)
+Code: `src-tauri/src/observer/` (`storage_health`)
+
+Surface the real `rusqlite::Error` (as a sanitized message) in the health row
+instead of one generic string. A test proves two different failures produce two
+different messages. Also take the carry-forward from slice-3: `migrate` issues
+no explicit `ROLLBACK` after `execute_batch` fails. Add one with a test, or
+record in `decisions.md` why not.
+
+---
+
 ## Explicitly not in this queue
 
 - **#7** (Git repository/worktree identity) and **#9** (SessionKey contract) are
