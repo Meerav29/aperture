@@ -17,6 +17,8 @@ and the latest validation report before selecting work.
   independent Windows work; keep Mac runtime validation pending until performed.
 - Update affected documentation and evidence when implementation changes.
   Describe current behavior separately from future requirements.
+- `main` is production; `staging` is the integrated latest app. Branch from and
+  open PRs against `staging`; see [docs/branching.md](docs/branching.md).
 - Preserve unrelated work and coordinate file ownership when agents share a
   checkout. Do not silently switch, reset, or discard another task's work.
 

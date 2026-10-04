@@ -1,7 +1,7 @@
 # Autopilot queue — aperture
 
 Design: `grid-prophet/docs/superpowers/specs/2026-09-19-autopilot-design.md`
-Rotation: Mon / Wed / Fri. Base branch: `auto/queue`. Window: 2026-09-20 → 09-25.
+Rotation: Mon / Wed / Fri. Base branch: `auto/queue` (consolidated into `staging`; see [branching](../branching.md)). Window: 2026-09-20 → 09-25.
 
 ## Read this before picking up a slice
 
