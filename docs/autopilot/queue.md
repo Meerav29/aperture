@@ -45,8 +45,10 @@ Terminal: `held` (owner vetoed), `blocked` (review rejected).
 
 ## slice-1 — Issue #18: stop `load_summaries` silently dropping rows
 
-Status: todo
+Status: merged
 Issue: [#18](https://github.com/Meerav29/aperture/issues/18) (Phase A)
+PR: [#33](https://github.com/Meerav29/aperture/pull/33) — merged to `auto/queue`
+2026-09-21 as `185dbab`.
 Code: `src-tauri/src/observer/db.rs` (`Db::load_summaries`)
 
 **This one goes first for a reason.** The issue argues that `Session`'s shape
@@ -75,7 +77,11 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-2 — Issue #17: bound `Store.sessions` with an eviction policy
 
-Status: todo
+Status: merged
+PR: [#41](https://github.com/Meerav29/aperture/pull/41) — merged to `auto/queue`
+by the owner 2026-09-27 as `37a0e03`, after criterion 2 was reworded to its
+durability half (owner decision 2026-09-26, option 1 from the review on #41).
+Making evicted sessions visible in a history view moved to #11.
 Issue: [#17](https://github.com/Meerav29/aperture/issues/17) (Phase A)
 Code: `src-tauri/src/observer/state.rs` (`Store::remove`, currently uncalled)
 
@@ -84,12 +90,15 @@ leaves the live store but stays in SQLite and returns through history views in
 Phase C. Use that unless the code makes it untenable; if it does, say so and
 record the alternative.
 
-Acceptance (from the issue — do not weaken):
+Acceptance (from the issue — do not weaken; criterion 2 reworded by the owner
+on 2026-09-26, see Status):
 
 - [ ] A documented, tested policy bounds `Store.sessions` independent of total
       historical session count.
-- [ ] **Evicted sessions remain visible in history**, backed by the durable
-      SQLite summaries. Eviction from memory is not deletion.
+- [ ] **Eviction from memory is not deletion.** An evicted session's summary
+      row stays in SQLite, and a test proves it is still there after eviction.
+      Making evicted sessions visible in a history view is #11's job, not this
+      slice's.
 - [ ] A regression test proves `Store.sessions` does not grow unbounded across
       many simulated reconcile cycles with aging sessions.
 - [ ] `Store::remove` (or equivalent) is actually wired into the reconcile path
@@ -104,9 +113,27 @@ in principle* is this slice's bar.
 
 ## slice-3 — Issue #20: multi-step migration test coverage
 
-Status: todo
+Status: merged
 Issue: [#20](https://github.com/Meerav29/aperture/issues/20)
+PR: [#56](https://github.com/Meerav29/aperture/pull/56) — merged to `auto/queue`
+by the review routine 2026-09-28 as `9f604ed`.
 Code: `src-tauri/src/observer/db.rs` (`migrate`, `MIGRATIONS`)
+
+Both criteria were verified against the diff, and both of the PR's mutation
+claims were reproduced independently rather than taken on trust: with
+`.skip(version)` removed from `migrate`'s loop only
+`a_second_migration_applies_on_top_of_an_already_migrated_database` fails, and
+with `BEGIN;`/`COMMIT;` removed from the per-migration batch only
+`a_failing_second_migration_leaves_an_already_migrated_database_intact` fails.
+Every pre-existing test passes against both breaks, which is issue #20's claim
+confirmed. `cargo test --locked` (65 passed) and `npm run build` were re-run in
+a Linux sandbox; CI was green on `d273162`, `rust` on `windows-latest`.
+
+Carried forward, not fixed here: `migrate` issues no explicit `ROLLBACK` after
+`execute_batch` fails, so the connection is left holding an open transaction and
+the rollback depends on the connection being dropped. Correct for the sole real
+caller (`Db::open`), a trap for any future one. The PR flags it under "Observed,
+not changed" for the owner to file.
 
 Pure test work on the storage layer that slices 1 and 2 both touch. No product
 behavior changes, so it is sequence-neutral and safe to land last.
@@ -120,6 +147,48 @@ Acceptance (from the issue — do not weaken):
       the database at its last successfully committed version with data intact
       — byte-identical to the post-migration-1 state, not to a fresh file.
 - [ ] `cargo test` passes; `npm run build` passes.
+
+---
+
+## slice-4 — Issue #30: run `prune_summaries` during a long-running process
+
+Status: todo
+Issue: [#30](https://github.com/Meerav29/aperture/issues/30)
+Code: `src-tauri/src/observer/db.rs` (`prune_summaries`), startup/reconcile wiring
+
+Queued 2026-10-01 after the queue ran dry. Storage-layer correctness in the same
+area as slices 1-3; no host evidence needed. Acceptance is in the issue; do not
+weaken it. At minimum: retention runs on a schedule or reconcile cadence, not
+only once at startup, and a test proves rows older than the window are pruned
+by the periodic path. `cargo test` and `npm run build` must pass.
+
+---
+
+## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
+
+Status: todo
+Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
+Code: `src-tauri/src/lib.rs` (reconcile loop)
+
+Set an explicit `MissedTickBehavior` and prove with a paused-clock test that a
+long gap yields one reconcile, not a storm. Do not claim real sleep/wake
+behavior is validated; that is host evidence (see binding constraints). Issue
+#54 (misleading "forcing full reconciliation" log) touches the same lines; fix
+the log message only if it falls out of the change, and say so in the PR.
+
+---
+
+## slice-6 — Issue #50: `storage_health` discards the real error
+
+Status: todo
+Issue: [#50](https://github.com/Meerav29/aperture/issues/50)
+Code: `src-tauri/src/observer/` (`storage_health`)
+
+Surface the real `rusqlite::Error` (as a sanitized message) in the health row
+instead of one generic string. A test proves two different failures produce two
+different messages. Also take the carry-forward from slice-3: `migrate` issues
+no explicit `ROLLBACK` after `execute_batch` fails. Add one with a test, or
+record in `decisions.md` why not.
 
 ---
 

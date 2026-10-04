@@ -2,8 +2,9 @@ use crate::observer::{
     db::Db,
     model::{Session, Snapshot},
     passive::Observer,
-    state::Store,
+    state::{Store, LIVE_STORE_IDLE_DAYS},
 };
+use chrono::{Duration, Utc};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use tauri::{AppHandle, Emitter, State};
@@ -29,9 +30,26 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     let cursors = observer.export_cursors();
     let summaries_ok = db.save_summaries(&sessions).is_ok();
     let cursors_ok = db.save_cursors(&cursors).is_ok();
-    store
-        .integrations
-        .push(storage_health(db, summaries_ok && cursors_ok));
+
+    // Eviction runs *after* the save, not before (issue #17). Backfill
+    // discovers old transcripts, so a session can enter the store already
+    // past the idle threshold; evicting first would drop it before its
+    // summary was ever written and turn "stays in SQLite" into silent loss.
+    // Saving first makes the durable row the thing eviction falls back on.
+    let evicted = store.evict_idle(Utc::now(), Duration::days(LIVE_STORE_IDLE_DAYS));
+    // The live store is not the only per-session map: `Db`'s write-skipping
+    // cache holds a serialized copy of every summary it has written, so
+    // leaving those entries behind would just move the growth.
+    db.forget_cached_summaries(&evicted);
+
+    let evicted_idle = store.evicted_idle;
+    let idle_not_restored = store.idle_not_restored;
+    store.integrations.push(storage_health(
+        db,
+        summaries_ok && cursors_ok,
+        evicted_idle,
+        idle_not_restored,
+    ));
 }
 
 /// Synthetic health row reporting whether SQLite persistence succeeded on
@@ -53,16 +71,95 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
 /// succeeded". A database that silently became unwritable while the app was
 /// idle (nothing changed) won't be caught until there's actually something
 /// new to persist.
-fn storage_health(db: &Db, ok: bool) -> crate::observer::model::IntegrationHealth {
-    let durable = db.is_durable();
-    let state = if durable && ok { "ok" } else { "degraded" };
-    let detail = if !durable {
-        "in-memory only: database unavailable, history will not survive a restart.".to_string()
-    } else if ok {
-        "SQLite persistence writing normally.".to_string()
+///
+/// It also reports rows the startup `load_summaries` could not deserialize
+/// (issue #18). That is a read-side failure, not a write-side one, so it is
+/// reported alongside the write state rather than replacing it: a cycle can
+/// be writing perfectly well and still be missing history it failed to read.
+///
+/// `evicted_idle` and `idle_not_restored` are reported for a different reason
+/// again: nothing is wrong, but sessions are absent from the live view under
+/// issue #17's idle policy, and a card vanishing with no explanation is
+/// indistinguishable from the missed session the Phase A dogfood log is
+/// watching for. So they are stated, and the state stays `"ok"` — a working
+/// policy is not a degradation.
+///
+/// They are two clauses rather than one sum because they are not the same
+/// event: `evicted_idle` counts sessions that were in the live view and left
+/// it, `idle_not_restored` counts stored rows that were never admitted at
+/// startup. Adding them and calling the total "left the live view" would be
+/// wrong about the second group.
+fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
+    if n == 1 {
+        one
     } else {
-        "SQLite write failed this cycle; running in-memory only until it recovers.".to_string()
+        many
+    }
+}
+
+fn storage_health(
+    db: &Db,
+    ok: bool,
+    evicted_idle: usize,
+    idle_not_restored: usize,
+) -> crate::observer::model::IntegrationHealth {
+    let durable = db.is_durable();
+    let unreadable = db.unreadable_summaries();
+    let state = if durable && ok && unreadable == 0 {
+        "ok"
+    } else {
+        "degraded"
     };
+    let mut details = Vec::new();
+    if !durable {
+        details.push(
+            "in-memory only: database unavailable, history will not survive a restart.".to_string(),
+        );
+    } else if !ok {
+        details.push(
+            "SQLite write failed this cycle; running in-memory only until it recovers.".to_string(),
+        );
+    }
+    if unreadable > 0 {
+        details.push(format!(
+            "{unreadable} stored session {} could not be read at startup and {} missing from \
+             history; the {} still in the database.",
+            if unreadable == 1 {
+                "summary"
+            } else {
+                "summaries"
+            },
+            if unreadable == 1 { "is" } else { "are" },
+            if unreadable == 1 {
+                "row is"
+            } else {
+                "rows are"
+            },
+        ));
+    }
+    if details.is_empty() {
+        details.push("SQLite persistence writing normally.".to_string());
+    }
+    // Two separate counts, deliberately not summed: one names sessions that
+    // were in the live view and left it, the other names stored rows that
+    // were never admitted at startup. Reporting the total as "left the live
+    // view" would be wrong about the second group.
+    if evicted_idle > 0 {
+        details.push(format!(
+            "{evicted_idle} {} no observation in {LIVE_STORE_IDLE_DAYS} days and left the live \
+             view; the {} still in the database.",
+            plural(evicted_idle, "session had", "sessions had"),
+            plural(evicted_idle, "summary is", "summaries are"),
+        ));
+    }
+    if idle_not_restored > 0 {
+        details.push(format!(
+            "{idle_not_restored} stored {} not shown at startup, after \
+             {LIVE_STORE_IDLE_DAYS} days with no observation; still in the database.",
+            plural(idle_not_restored, "summary was", "summaries were"),
+        ));
+    }
+    let detail = details.join(" ");
     crate::observer::model::IntegrationHealth {
         provider: "storage".into(),
         state: state.into(),
@@ -166,7 +263,7 @@ mod tests {
         reconcile_and_persist(&mut observer, &mut store, &db);
 
         assert_eq!(store.snapshot().sessions.len(), 1);
-        let persisted = db.load_summaries().unwrap();
+        let persisted = db.load_summaries().unwrap().sessions;
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].id, "claude_code:r1");
         let cursors = db.load_cursors().unwrap();
@@ -240,13 +337,198 @@ mod tests {
     }
 
     #[test]
+    fn storage_health_reports_summary_rows_that_could_not_be_read() {
+        use crate::observer::db::Db;
+
+        // Issue #18: a startup load that dropped rows must not leave the
+        // health entry reporting a clean "ok". The write path here is
+        // perfectly healthy — durable and succeeding — so "ok" is exactly
+        // what this row said before, over a history missing a session.
+        let root = std::env::temp_dir().join(format!(
+            "aperture-storage-health-unreadable-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("unreadable.db")).unwrap();
+        db.insert_raw_summary("claude_code:broken", "{not json at all");
+        let load = db.load_summaries().unwrap();
+        assert_eq!(load.failed.len(), 1);
+
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "degraded");
+        assert!(
+            storage.detail.contains("could not be read"),
+            "expected the unreadable-rows detail, got: {}",
+            storage.detail
+        );
+        assert!(
+            storage.detail.contains("still in the database"),
+            "the detail must say the rows were kept, not deleted: {}",
+            storage.detail
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn reconcile_evicts_an_idle_session_from_memory_but_keeps_its_summary_in_sqlite() {
+        use crate::observer::db::Db;
+
+        // Issue #17's wiring criterion, at the level the bug actually lived:
+        // `Store::remove` existed and the reconcile path never called it, so
+        // this session stayed resident for the life of the process. The
+        // second half is the one that makes eviction honest — the durable row
+        // must still be there, written by this same cycle before the evict.
+        let root =
+            std::env::temp_dir().join(format!("aperture-evict-reconcile-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("evict.db")).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+
+        let idle = Session::new(
+            "claude_code:idle".into(),
+            "/repo".into(),
+            Utc::now() - Duration::days(LIVE_STORE_IDLE_DAYS + 1),
+        );
+        let fresh = Session::new("codex:fresh".into(), "/repo".into(), Utc::now());
+        store.sessions.insert(idle.id.clone(), idle);
+        store.sessions.insert(fresh.id.clone(), fresh);
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let live: Vec<String> = store
+            .snapshot()
+            .sessions
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(live, ["codex:fresh"], "the idle session must leave memory");
+
+        let mut persisted: Vec<String> = db
+            .load_summaries()
+            .unwrap()
+            .sessions
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        persisted.sort();
+        assert_eq!(
+            persisted,
+            ["claude_code:idle", "codex:fresh"],
+            "eviction is not deletion: the summary must survive in SQLite"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn storage_health_reports_sessions_that_left_the_live_view() {
+        use crate::observer::db::Db;
+
+        // A card disappearing with no explanation reads like the missed
+        // session the dogfood log is watching for. Nothing is wrong here, so
+        // the row must stay "ok" while still saying what happened.
+        let root =
+            std::env::temp_dir().join(format!("aperture-evict-health-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("health.db")).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+        let idle = Session::new(
+            "claude_code:idle".into(),
+            "/repo".into(),
+            Utc::now() - Duration::days(LIVE_STORE_IDLE_DAYS + 1),
+        );
+        store.sessions.insert(idle.id.clone(), idle);
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "ok", "a working policy is not a degradation");
+        assert!(
+            storage.detail.contains("left the live view"),
+            "expected the eviction detail, got: {}",
+            storage.detail
+        );
+        assert!(
+            storage.detail.contains("still in the database"),
+            "the detail must say the summary was kept, not deleted: {}",
+            storage.detail
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn health_does_not_report_a_startup_skipped_row_as_having_left_the_live_view() {
+        use crate::observer::db::Db;
+
+        // A row `restore_summaries` declined to admit was never in the live
+        // view, so folding it into the "left the live view" count would
+        // describe it wrongly. Both absences are reported; they are separate
+        // sentences because they are separate events.
+        let root = std::env::temp_dir().join(format!(
+            "aperture-health-startup-skip-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Db::open(&root.join("skip.db")).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+
+        let old = Session::new(
+            "claude_code:old".into(),
+            "/repo".into(),
+            Utc::now() - Duration::days(60),
+        );
+        store.restore_summaries(vec![old], Utc::now(), Duration::days(LIVE_STORE_IDLE_DAYS));
+        assert_eq!(store.idle_not_restored, 1);
+        assert_eq!(store.evicted_idle, 0);
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let detail = &store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present")
+            .detail;
+        assert!(
+            detail.contains("not shown at startup"),
+            "the startup-skipped row must still be reported: {detail}"
+        );
+        assert!(
+            !detail.contains("left the live view"),
+            "a row that never entered the live view must not be said to have \
+             left it: {detail}"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn reconcile_and_persist_writes_nothing_new_when_nothing_changed() {
         use crate::observer::db::Db;
 
-        let root = std::env::temp_dir().join(format!(
-            "aperture-noop-reconcile-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("aperture-noop-reconcile-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("s.jsonl");
         let line = serde_json::json!({
@@ -263,7 +545,7 @@ mod tests {
         let cursor_path = path.to_string_lossy().into_owned();
 
         reconcile_and_persist(&mut observer, &mut store, &db);
-        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        assert_eq!(db.load_summaries().unwrap().sessions.len(), 1);
         let updated_at_after_first = db.summary_updated_at("claude_code:noop").unwrap();
         let cursor_updated_at_after_first = db.cursor_updated_at(&cursor_path).unwrap();
 
