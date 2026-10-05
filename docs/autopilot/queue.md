@@ -152,7 +152,8 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-4 — Issue #30: run `prune_summaries` during a long-running process
 
-Status: in-progress
+Status: in-review
+PR: [#77](https://github.com/Meerav29/aperture/pull/77)
 Issue: [#30](https://github.com/Meerav29/aperture/issues/30)
 Code: `src-tauri/src/observer/db.rs` (`prune_summaries`), startup/reconcile wiring
 
