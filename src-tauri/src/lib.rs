@@ -10,6 +10,11 @@ use tokio::sync::{mpsc, Mutex};
 const RECONCILE_INTERVAL_SECS: u64 = 5;
 const SLEEP_WAKE_THRESHOLD_SECS: i64 = 90;
 const SUMMARY_RETENTION_DAYS: i64 = 90;
+/// How long between summary-retention passes inside a running process.
+/// Startup pruning alone leaves a long-running process accumulating rows
+/// past the retention window until it happens to restart (issue #30), and
+/// this tool is meant to be left open for days.
+const SUMMARY_PRUNE_INTERVAL_SECS: i64 = 60 * 60;
 
 /// A wall-clock gap this large between reconciles means the process was
 /// almost certainly suspended (OS sleep, laptop lid close) rather than just
@@ -35,6 +40,43 @@ fn watcher_reconcile_delay(
     min_spacing: std::time::Duration,
 ) -> Option<std::time::Duration> {
     min_spacing.checked_sub(elapsed).filter(|d| !d.is_zero())
+}
+
+/// Whether a summary-retention pass is due.
+///
+/// Wall-clock rather than monotonic, deliberately: the window retention
+/// enforces is wall-clock (90 days of `updated_at`), `Db::prune_summaries`
+/// derives its cutoff from `Utc::now()`, and this loop already reasons in
+/// wall-clock time — see `is_wake_gap`. A machine suspended overnight should
+/// prune on the first reconcile after it wakes, which a clock that stops
+/// during suspend would not do.
+///
+/// `now < last` means wall-clock time moved backwards (an NTP correction, the
+/// user changing the system clock). That counts as due. The alternative is
+/// retention stalling until wall-clock time catches up, which for a large
+/// backwards jump is indefinite; running one extra `DELETE` is the cheaper
+/// mistake.
+fn summary_prune_due(last: DateTime<Utc>, now: DateTime<Utc>, every_secs: i64) -> bool {
+    now < last || (now - last).num_seconds() >= every_secs
+}
+
+/// One reconcile tick's worth of summary retention.
+///
+/// `None` means this tick was skipped and **no SQL was issued at all** — the
+/// common case, since reconcile runs every `RECONCILE_INTERVAL_SECS` seconds
+/// and retention is hourly. `Some` carries `prune_summaries`' own result, and
+/// the caller moves its `last_prune_at` forward on either outcome: a database
+/// that fails to prune should be retried on the next retention cycle, not on
+/// every tick.
+fn prune_summaries_if_due(
+    db: &Db,
+    last_prune_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<rusqlite::Result<usize>> {
+    if !summary_prune_due(last_prune_at, now, SUMMARY_PRUNE_INTERVAL_SECS) {
+        return None;
+    }
+    Some(db.prune_summaries(SUMMARY_RETENTION_DAYS))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -115,6 +157,10 @@ pub fn run() {
                     tokio::time::interval(std::time::Duration::from_secs(RECONCILE_INTERVAL_SECS));
                 let mut last_poll_at = Utc::now();
                 let mut last_reconcile_instant = std::time::Instant::now();
+                // Anchored to the startup prune in `run()` above, so the
+                // first in-loop pass is one interval after launch rather
+                // than immediately.
+                let mut last_prune_at = Utc::now();
 
                 loop {
                     tokio::select! {
@@ -143,14 +189,40 @@ pub fn run() {
                     let s = store.clone();
                     let o = observer.clone();
                     let d = db.clone();
-                    if let Err(e) = tokio::task::spawn_blocking(move || {
-                        let mut observer_guard = o.lock().expect("observer lock");
-                        let mut store_guard = s.blocking_lock();
-                        reconcile_and_persist(&mut observer_guard, &mut store_guard, &d);
+                    let prune_from = last_prune_at;
+                    match tokio::task::spawn_blocking(move || {
+                        {
+                            let mut observer_guard = o.lock().expect("observer lock");
+                            let mut store_guard = s.blocking_lock();
+                            reconcile_and_persist(&mut observer_guard, &mut store_guard, &d);
+                        }
+                        // Retention rides this blocking task rather than
+                        // spawning its own: the gate is hourly, so nearly
+                        // every tick returns here without touching SQLite.
+                        // The store and observer locks are released above
+                        // first — retention needs neither.
+                        prune_summaries_if_due(&d, prune_from, now)
                     })
                     .await
                     {
-                        eprintln!("Observer failed: {e}");
+                        Ok(None) => {}
+                        Ok(Some(Ok(removed))) => {
+                            last_prune_at = now;
+                            if removed > 0 {
+                                eprintln!(
+                                    "Aperture: retention removed {removed} session \
+                                     summaries older than {SUMMARY_RETENTION_DAYS} days"
+                                );
+                            }
+                        }
+                        Ok(Some(Err(e))) => {
+                            last_prune_at = now;
+                            eprintln!(
+                                "Aperture: summary retention failed ({e}); \
+                                 retrying on the next retention cycle"
+                            );
+                        }
+                        Err(e) => eprintln!("Observer failed: {e}"),
                     }
                     last_poll_at = Utc::now();
                     last_reconcile_instant = std::time::Instant::now();
@@ -213,5 +285,104 @@ mod tests {
             ),
             Some(std::time::Duration::from_millis(700))
         );
+    }
+
+    /// One simulated reconcile tick's wall-clock step.
+    fn tick() -> Duration {
+        Duration::seconds(RECONCILE_INTERVAL_SECS as i64)
+    }
+
+    #[test]
+    fn retention_is_not_due_before_the_interval_elapses() {
+        let last = Utc::now();
+        assert!(!summary_prune_due(
+            last,
+            last + Duration::seconds(SUMMARY_PRUNE_INTERVAL_SECS - 1),
+            SUMMARY_PRUNE_INTERVAL_SECS
+        ));
+    }
+
+    #[test]
+    fn retention_is_due_once_the_interval_elapses() {
+        let last = Utc::now();
+        assert!(summary_prune_due(
+            last,
+            last + Duration::seconds(SUMMARY_PRUNE_INTERVAL_SECS),
+            SUMMARY_PRUNE_INTERVAL_SECS
+        ));
+    }
+
+    #[test]
+    fn a_backwards_clock_jump_does_not_stall_retention() {
+        // An NTP correction or a user clock change can move wall-clock time
+        // backwards. Waiting for it to catch up would park retention for the
+        // size of the jump, which is unbounded.
+        let last = Utc::now();
+        assert!(summary_prune_due(
+            last,
+            last - Duration::hours(6),
+            SUMMARY_PRUNE_INTERVAL_SECS
+        ));
+    }
+
+    #[test]
+    fn a_long_running_process_prunes_an_expired_summary_without_restarting() {
+        // Issue #30's first criterion. The simulated clock drives the *gate*
+        // only — `prune_summaries` derives its cutoff from the real
+        // `Utc::now()`, so the expired row has to be genuinely older than the
+        // window at insert time. What this proves is that the in-loop path
+        // reaches it at all; before this change nothing but a restart did.
+        let db = Db::in_memory();
+        db.insert_aged_summary("claude_code:expired", "{}", SUMMARY_RETENTION_DAYS + 10);
+        db.insert_aged_summary("claude_code:recent", "{}", 1);
+
+        let start = Utc::now();
+        let mut last_prune_at = start;
+        let mut now = start;
+        let mut passes = 0usize;
+        // Two hours of reconcile ticks, no restart in between.
+        for _ in 0..(2 * 3600 / RECONCILE_INTERVAL_SECS) {
+            now += tick();
+            if let Some(result) = prune_summaries_if_due(&db, last_prune_at, now) {
+                result.expect("prune");
+                passes += 1;
+                last_prune_at = now;
+            }
+        }
+
+        assert_eq!(passes, 2, "hourly retention across two simulated hours");
+        assert!(
+            db.summary_updated_at("claude_code:expired").is_none(),
+            "a row past the retention window survived a long-running process"
+        );
+        assert!(
+            db.summary_updated_at("claude_code:recent").is_some(),
+            "retention removed a row inside the window"
+        );
+    }
+
+    #[test]
+    fn retention_does_not_run_on_every_reconcile_tick() {
+        // Issue #30's second criterion: no needless SQL on the hot path.
+        // `prune_summaries_if_due` returning `None` is the evidence — it
+        // returns before calling into `Db` at all.
+        let db = Db::in_memory();
+        let start = Utc::now();
+        let mut last_prune_at = start;
+        let mut now = start;
+        let mut ticks = 0usize;
+        let mut passes = 0usize;
+
+        while now < start + Duration::hours(1) {
+            now += tick();
+            ticks += 1;
+            if prune_summaries_if_due(&db, last_prune_at, now).is_some() {
+                passes += 1;
+                last_prune_at = now;
+            }
+        }
+
+        assert_eq!(ticks, 720, "one hour at a 5-second reconcile cadence");
+        assert_eq!(passes, 1, "retention ran {passes} times in one hour");
     }
 }

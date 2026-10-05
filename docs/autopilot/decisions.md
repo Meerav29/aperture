@@ -288,3 +288,71 @@ Rejected:    Reusing the existing invalid-from-statement-one shape, which
              file if wanted.
 Blast radius: Same as the entry above — one `const &str` in the test module.
              No change to `migrate`, `MIGRATIONS`, or any migration SQL.
+
+## 2026-10-05 — slice-4, PR #77
+Question:    Issue #30 asks for retention "gated by a simple last-pruned
+             timestamp" but does not say which clock. Monotonic
+             (`std::time::Instant`, which the loop already keeps as
+             `last_reconcile_instant`) or wall-clock (`DateTime<Utc>`, which
+             the loop already keeps as `last_poll_at`)?
+Chosen:      Wall-clock, as a `DateTime<Utc>` named `last_prune_at`, with
+             `now < last` counted as due. Three reasons, in order of weight.
+             (a) The window being enforced is wall-clock: `prune_summaries`
+             derives its cutoff from `Utc::now()` minus 90 days, so a gate on
+             a different clock measures something other than what it gates.
+             (b) `std::time::Instant` is specified only as monotonically
+             non-decreasing; whether it advances while the machine is
+             suspended is a platform detail, and this loop already has a
+             sleep/wake story it reasons about in wall-clock terms
+             (`is_wake_gap`). A laptop closed overnight should prune on the
+             first reconcile after it wakes, not an hour later.
+             (c) Wall-clock is testable without a clock abstraction: the
+             tests step a `DateTime<Utc>` forward by 5 seconds a tick and
+             drive the real gate, where `Instant` would have needed either a
+             trait or `tokio::time::pause`.
+             The cost of (b) and (c) is that wall-clock can move backwards.
+             `now < last` is therefore treated as due rather than as "not yet":
+             a six-hour NTP correction or a user clock change would otherwise
+             park retention for six hours, and an arbitrary backwards jump
+             parks it indefinitely. One extra indexed `DELETE` is the cheaper
+             mistake, and
+             `a_backwards_clock_jump_does_not_stall_retention` pins it.
+Rejected:    (a) `Instant`-based gating, for the reasons above. (b) Reusing
+             the existing `last_poll_at` as the gate, which would conflate
+             two independent cadences — a change to the reconcile interval
+             would silently change the retention interval.
+Blast radius: `src-tauri/src/lib.rs` — one new `const`, two new free
+             functions (`summary_prune_due`, `prune_summaries_if_due`), one
+             new loop local. No signature in `Db` changes and no SQL changes,
+             so reverting is deleting the gate and the call. An installed
+             database is unaffected either way: retention deletes the same
+             rows the startup prune already deleted, just sooner.
+
+## 2026-10-05 — slice-4, PR #77
+Question:    Where should the periodic prune run, and what should happen when
+             it fails? The issue says "from within the reconcile loop" but the
+             loop does its SQL inside a `spawn_blocking` task, and
+             `prune_summaries` is blocking.
+Chosen:      Fold retention into the reconcile tick's existing
+             `spawn_blocking` closure, after the store and observer guards are
+             dropped, returning `Option<rusqlite::Result<usize>>` so the
+             caller can tell "skipped, no SQL issued" from "ran". On an error
+             the caller still advances `last_prune_at`, so a database that
+             cannot prune is retried in an hour rather than on every 5-second
+             tick.
+Rejected:    (a) A separate `tokio::time::interval` task for retention. It
+             would be a second writer to the one connection the module header
+             documents as "touched only from blocking tasks — see `lib.rs`'s
+             reconcile loop for the single-writer contract", for a job that
+             runs once an hour. (b) A second `spawn_blocking` per tick just to
+             evaluate the gate — 720 task spawns an hour to answer a
+             subtraction. The gate is pure and the closure already holds the
+             `Arc<Db>`. (c) Leaving `last_prune_at` unmoved on error so the
+             next tick retries: on a locked or corrupt database that turns a
+             once-an-hour `DELETE` into one every five seconds, which is the
+             hot-path cost the issue's second criterion exists to prevent.
+Blast radius: Same two functions plus the `match` that replaced the loop's
+             `if let Err(e) = …` on the join result. The reconcile call itself
+             is unchanged — it moved inside a block so its guards drop before
+             retention runs. The `Err(e) => eprintln!("Observer failed: {e}")`
+             arm preserves the previous behavior for a panicked task.
