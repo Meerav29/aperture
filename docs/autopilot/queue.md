@@ -224,9 +224,36 @@ by the periodic path. `cargo test` and `npm run build` must pass.
 
 ## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
 
-Status: in-progress
+Status: in-review
+PR: [#81](https://github.com/Meerav29/aperture/pull/81) — opened against
+`auto/queue` 2026-10-07.
 Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
 Code: `src-tauri/src/lib.rs` (reconcile loop)
+
+`reconcile_interval()` sets `MissedTickBehavior::Delay`; the loop's
+`tokio::select!` wait moved into `wait_for_reconcile` so the cadence is
+reachable from a test at all. Four paused-clock tests; two of them fail
+without the change (`Burst` restored: 72 pass, 2 fail — and the suspend test's
+failure output is `[0ns, 0ns, 0ns]`, the storm itself), one also fails under
+the rejected `Skip` policy (`[0ns, 4.999s, 5s]`). The other two are labelled
+guards, not evidence. `cargo test` (74 passed) and `npm run build` both ran in
+a Linux sandbox after installing the Tauri system libraries; the
+`windows-latest` gate was pending when the PR body was written and the body
+says so rather than guessing.
+
+Carried forward, in the PR under "Acceptance criteria" and "Observed, not
+changed": the test measures when the loop is *released to run*, not the
+reconcile and `push_snapshot` that follow, because the loop body is still
+inside `tauri::Builder::setup` — this narrows slice-4's carry-forward rather
+than closing it. And `is_wake_gap`'s doc comment now claims slightly more than
+it can ("can only come from lost wall-clock time"), since under `Delay` a
+single 90s reconcile pass can trip the detector; not changed, as the threshold
+would need issue #13's numbers.
+
+#54's log message was reworded, which the queue permits "only if it falls out
+of the change" — the PR argues it does and says so. **#54 is not closed by
+this**: its other route, a genuinely different wake-gap rescan, needs host
+evidence and is the owner's call.
 
 Set an explicit `MissedTickBehavior` and prove with a paused-clock test that a
 long gap yields one reconcile, not a storm. Do not claim real sleep/wake
