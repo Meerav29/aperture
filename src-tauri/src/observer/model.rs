@@ -34,6 +34,22 @@ pub enum Host {
     Unknown,
 }
 
+/// Deserialization policy, decided for issue #18 and recorded in
+/// `docs/autopilot/decisions.md`: no `#[serde(default)]` is added here.
+///
+/// The `Option` fields are already tolerant of a missing key — serde's derive
+/// resolves a missing field for `Option<T>` to `None` — so an additive
+/// `Option` field costs no stored history, and `None` is an honest "not
+/// known" rather than a fabricated value. `db::tests::
+/// a_row_written_before_an_optional_field_existed_still_loads` pins that,
+/// so a later change cannot quietly take it away.
+///
+/// The required fields deliberately stay strict. Defaulting `id`, `attention`,
+/// `status` or `cwd` would turn an unreadable row into a plausible-looking
+/// session with an empty identity and a manufactured state — the same "silent
+/// loss presented as a clean state" issue #18 exists to stop. A breaking
+/// change to those is accepted as a migration cost that `Db::load_summaries`
+/// now makes visible instead of swallowing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,

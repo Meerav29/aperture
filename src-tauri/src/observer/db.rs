@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use chrono::Utc;
@@ -36,6 +37,31 @@ struct ConnState {
     cursor_cache: HashMap<String, CursorRecord>,
 }
 
+/// One stored summary row that could not be turned back into a `Session`.
+/// `id` comes from the row's own `id` column, which is readable even when the
+/// `data` blob is unusable, so a failure can name the session it lost.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SummaryLoadFailure {
+    pub id: String,
+    pub error: String,
+}
+
+/// The result of `load_summaries`: the rows that deserialized, and the rows
+/// that did not. Returning both is deliberate — the previous signature was
+/// `Vec<Session>`, which made a row that failed to deserialize
+/// indistinguishable from a row that was never written, so callers had no way
+/// to tell a restored history from a partially lost one.
+#[derive(Debug, Default)]
+pub struct SummaryLoad {
+    pub sessions: Vec<Session>,
+    pub failed: Vec<SummaryLoadFailure>,
+}
+
+/// How many individual failures `load_summaries` names on stderr before it
+/// stops and leaves the rest to the summary line. A database that is broadly
+/// corrupt should not bury every other startup message.
+const MAX_LOGGED_LOAD_FAILURES: usize = 10;
+
 pub struct Db {
     state: Mutex<ConnState>,
     /// The on-disk path this `Db` was opened against, or `None` when backed
@@ -45,6 +71,12 @@ pub struct Db {
     /// failed" from "not durable at all" — both look identical from inside
     /// a single save call, since in-memory saves always succeed.
     path: Option<PathBuf>,
+    /// How many rows the most recent `load_summaries` could not deserialize.
+    /// Kept on `Db` rather than only returned because summaries are loaded
+    /// once, at startup, while the storage health entry is rebuilt on every
+    /// reconcile cycle — without this the health row would go on reporting a
+    /// clean `"ok"` over a history that is quietly missing sessions.
+    unreadable_summaries: AtomicUsize,
 }
 
 /// The platform app-data directory Aperture uses for its own files.
@@ -80,6 +112,7 @@ impl Db {
                 cursor_cache: HashMap::new(),
             }),
             path: Some(path.to_path_buf()),
+            unreadable_summaries: AtomicUsize::new(0),
         })
     }
 
@@ -93,6 +126,7 @@ impl Db {
                 cursor_cache: HashMap::new(),
             }),
             path: None,
+            unreadable_summaries: AtomicUsize::new(0),
         }
     }
 
@@ -139,17 +173,84 @@ impl Db {
         Ok(())
     }
 
-    pub fn load_summaries(&self) -> rusqlite::Result<Vec<Session>> {
-        let guard = self.state.lock().expect("db lock");
-        let mut stmt = guard.conn.prepare("SELECT data FROM session_summaries")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
-        for r in rows {
-            if let Ok(s) = serde_json::from_str::<Session>(&r?) {
-                out.push(s);
+    /// Load every stored summary, reporting the rows that could not be read
+    /// instead of dropping them on the floor. A row whose `data` no longer
+    /// matches the current `Session` shape — a field added by a later build,
+    /// a genuine corruption — is counted, logged, and named in
+    /// `SummaryLoad::failed`; the remaining valid rows still load.
+    ///
+    /// The unreadable rows are deliberately left in SQLite. This mirrors the
+    /// migration-failure rule in `docs/specification.md` ("Storage and
+    /// historical ingestion"): leave the original intact and surface the
+    /// failure, rather than silently presenting a clean empty state.
+    pub fn load_summaries(&self) -> rusqlite::Result<SummaryLoad> {
+        let mut out = SummaryLoad::default();
+        {
+            let guard = self.state.lock().expect("db lock");
+            let mut stmt = guard
+                .conn
+                .prepare("SELECT id, data FROM session_summaries")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for r in rows {
+                let (id, data) = r?;
+                match serde_json::from_str::<Session>(&data) {
+                    Ok(s) => out.sessions.push(s),
+                    Err(e) => out.failed.push(SummaryLoadFailure {
+                        id,
+                        error: e.to_string(),
+                    }),
+                }
             }
         }
+
+        self.unreadable_summaries
+            .store(out.failed.len(), Ordering::Relaxed);
+        for f in out.failed.iter().take(MAX_LOGGED_LOAD_FAILURES) {
+            eprintln!(
+                "Aperture: stored session summary {} could not be read ({}); \
+                 it is missing from history but was left in the database",
+                f.id, f.error
+            );
+        }
+        if !out.failed.is_empty() {
+            eprintln!(
+                "Aperture: {} of {} stored session summaries could not be read",
+                out.failed.len(),
+                out.failed.len() + out.sessions.len()
+            );
+        }
         Ok(out)
+    }
+
+    /// Drop the cached "last written" copy of each id, without touching the
+    /// stored rows.
+    ///
+    /// `summary_cache` holds a serialized `Session` per id so `save_summaries`
+    /// can skip rows whose content has not changed. That cache is keyed by
+    /// every session ever written this process, so bounding `Store.sessions`
+    /// (issue #17) without bounding this would move the growth rather than
+    /// remove it — the cached JSON is larger than the `Session` it stands for.
+    ///
+    /// Forgetting an id is always safe — a cache miss makes the next save
+    /// write the row rather than skip it, so the worst case is one redundant
+    /// write when an evicted session is resumed. It is never a way to delete:
+    /// the row itself is untouched and `load_summaries` still returns it.
+    pub fn forget_cached_summaries(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut guard = self.state.lock().expect("db lock");
+        for id in ids {
+            guard.summary_cache.remove(id);
+        }
+    }
+
+    /// How many rows the most recent `load_summaries` could not deserialize,
+    /// for the storage health entry. Zero before any load.
+    pub fn unreadable_summaries(&self) -> usize {
+        self.unreadable_summaries.load(Ordering::Relaxed)
     }
 
     pub fn save_cursors(&self, cursors: &[CursorRecord]) -> rusqlite::Result<()> {
@@ -271,6 +372,46 @@ impl Db {
             .ok()
     }
 
+    /// Test-only writer: store a summary row's `data` verbatim, bypassing
+    /// `Session` serialization, so tests can plant a row whose body does not
+    /// match the current shape. There is no production path that writes an
+    /// unparseable summary — the real one is a build whose `Session` differs
+    /// from the build that wrote the row, which a test cannot reproduce.
+    #[cfg(test)]
+    pub(crate) fn insert_raw_summary(&self, id: &str, data: &str) {
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .execute(
+                "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data",
+                params![id, data, Utc::now().to_rfc3339()],
+            )
+            .expect("insert raw summary");
+    }
+
+    /// Test-only writer: plant a summary row whose `updated_at` is
+    /// `days_ago` days in the past, so a retention test can age a row
+    /// instead of waiting for one. Writing the column directly is the only
+    /// way to do it — `save_summaries` always stamps `Utc::now()`, and
+    /// retention reads `updated_at`, not anything inside `data`.
+    #[cfg(test)]
+    pub(crate) fn insert_aged_summary(&self, id: &str, data: &str, days_ago: i64) {
+        let at = (Utc::now() - chrono::Duration::days(days_ago)).to_rfc3339();
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .execute(
+                "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data,
+                     updated_at = excluded.updated_at",
+                params![id, data, at],
+            )
+            .expect("insert aged summary");
+    }
+
     /// Test-only accessor: the raw `updated_at` column for one cursor row.
     /// See `summary_updated_at`.
     #[cfg(test)]
@@ -333,11 +474,134 @@ mod tests {
         let db = Db::in_memory();
         let sessions = vec![sample_session("claude_code:a"), sample_session("codex:b")];
         db.save_summaries(&sessions).unwrap();
-        let mut loaded = db.load_summaries().unwrap();
+        let mut loaded = db.load_summaries().unwrap().sessions;
         loaded.sort_by(|a, b| a.id.cmp(&b.id));
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].id, "claude_code:a");
         assert_eq!(loaded[1].id, "codex:b");
+    }
+
+    /// The same `Session` JSON a real row holds, with `drop` keys removed —
+    /// how a row written by a build with a different `Session` shape looks to
+    /// this one.
+    fn summary_json_without(id: &str, drop: &[&str]) -> String {
+        let value = serde_json::to_value(sample_session(id)).unwrap();
+        let mut obj = value.as_object().unwrap().clone();
+        for key in drop {
+            assert!(obj.remove(*key).is_some(), "{key} is not a Session field");
+        }
+        serde_json::Value::Object(obj).to_string()
+    }
+
+    #[test]
+    fn load_summaries_reports_unreadable_rows_and_still_loads_the_rest() {
+        // The bug this replaces: `load_summaries` skipped any row that failed
+        // to deserialize with no log, no count, and no way for a caller to
+        // tell the row apart from one that was never written.
+        let db = Db::in_memory();
+        db.save_summaries(&[sample_session("claude_code:good")])
+            .unwrap();
+        db.insert_raw_summary("claude_code:shape_changed", r#"{"id":"whatever"}"#);
+        db.insert_raw_summary("claude_code:corrupt", "{not json at all");
+
+        let load = db.load_summaries().unwrap();
+
+        assert_eq!(load.sessions.len(), 1, "valid rows must still load");
+        assert_eq!(load.sessions[0].id, "claude_code:good");
+
+        let mut failed: Vec<&str> = load.failed.iter().map(|f| f.id.as_str()).collect();
+        failed.sort();
+        assert_eq!(failed, ["claude_code:corrupt", "claude_code:shape_changed"]);
+        assert!(
+            load.failed.iter().all(|f| !f.error.is_empty()),
+            "each failure must carry why it failed"
+        );
+    }
+
+    #[test]
+    fn unreadable_rows_are_counted_for_health_and_left_in_the_database() {
+        let db = Db::in_memory();
+        db.save_summaries(&[sample_session("claude_code:good")])
+            .unwrap();
+        db.insert_raw_summary("claude_code:corrupt", "{");
+
+        db.load_summaries().unwrap();
+
+        // The count outlives the load itself: summaries are read once at
+        // startup, but `commands::storage_health` is rebuilt every cycle.
+        assert_eq!(db.unreadable_summaries(), 1);
+
+        // Eviction from the returned Vec is not deletion — the row stays put
+        // so the owner can recover it.
+        let rows: i64 = db
+            .state
+            .lock()
+            .unwrap()
+            .conn
+            .query_row("SELECT COUNT(*) FROM session_summaries", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn a_later_clean_load_clears_the_unreadable_count() {
+        let db = Db::in_memory();
+        db.insert_raw_summary("claude_code:corrupt", "{");
+        db.load_summaries().unwrap();
+        assert_eq!(db.unreadable_summaries(), 1);
+
+        db.insert_raw_summary(
+            "claude_code:corrupt",
+            &serde_json::to_string(&sample_session("claude_code:corrupt")).unwrap(),
+        );
+        db.load_summaries().unwrap();
+
+        assert_eq!(
+            db.unreadable_summaries(),
+            0,
+            "health must stop reporting a failure the database no longer has"
+        );
+    }
+
+    #[test]
+    fn a_row_written_before_an_optional_field_existed_still_loads() {
+        // Characterization, not a new guarantee: serde's derive already
+        // resolves a missing `Option` field to `None`, so this passes before
+        // and after issue #18's change. It is here to pin that — the
+        // deserialization decision in `docs/autopilot/decisions.md` rests on
+        // additive `Option` fields being free, and a later `deny_unknown_
+        // fields`, a hand-written Deserialize, or a field changed from
+        // `Option<T>` to `T` would silently make every older row unreadable.
+        let db = Db::in_memory();
+        db.insert_raw_summary(
+            "claude_code:a",
+            &summary_json_without("claude_code:a", &["title", "git_branch"]),
+        );
+
+        let load = db.load_summaries().unwrap();
+
+        assert!(load.failed.is_empty(), "{:?}", load.failed);
+        assert_eq!(load.sessions.len(), 1);
+        assert!(load.sessions[0].title.is_none());
+        assert!(load.sessions[0].git_branch.is_none());
+    }
+
+    #[test]
+    fn a_row_missing_a_required_field_is_reported_rather_than_defaulted() {
+        // The strict half: defaulting `attention` would produce a session
+        // claiming a state nothing observed, which is the failure mode this
+        // issue exists to stop. It must surface as a failure instead.
+        let db = Db::in_memory();
+        db.insert_raw_summary(
+            "claude_code:a",
+            &summary_json_without("claude_code:a", &["attention"]),
+        );
+
+        let load = db.load_summaries().unwrap();
+
+        assert!(load.sessions.is_empty(), "no fabricated session");
+        assert_eq!(load.failed.len(), 1);
+        assert_eq!(load.failed[0].id, "claude_code:a");
     }
 
     #[test]
@@ -347,7 +611,7 @@ mod tests {
         db.save_summaries(&[s.clone()]).unwrap();
         s.status = crate::observer::model::SessionStatus::Working;
         db.save_summaries(&[s]).unwrap();
-        let loaded = db.load_summaries().unwrap();
+        let loaded = db.load_summaries().unwrap().sessions;
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].status, crate::observer::model::SessionStatus::Working);
     }
@@ -379,7 +643,7 @@ mod tests {
         let second = db.summary_updated_at("claude_code:a").unwrap();
 
         assert_ne!(first, second, "changed content must update updated_at");
-        let loaded = db.load_summaries().unwrap();
+        let loaded = db.load_summaries().unwrap().sessions;
         assert_eq!(
             loaded[0].status,
             crate::observer::model::SessionStatus::Working
@@ -404,6 +668,32 @@ mod tests {
         let b_after = db.summary_updated_at("claude_code:b").unwrap();
         assert_eq!(a_before, a_after, "unchanged row a must not be rewritten");
         assert_ne!(b_before, b_after, "changed row b must be rewritten");
+    }
+
+    #[test]
+    fn forgetting_a_cached_summary_keeps_the_row_and_only_costs_a_rewrite() {
+        // The cache is what `save_summaries` checks before writing, so
+        // dropping an entry is observable exactly one way: the next save of
+        // identical content stops being skipped. The row must be unchanged.
+        let db = Db::in_memory();
+        let s = sample_session("claude_code:a");
+        db.save_summaries(&[s.clone()]).unwrap();
+        let before = db.summary_updated_at("claude_code:a").unwrap();
+
+        db.forget_cached_summaries(&["claude_code:a".to_string()]);
+
+        assert_eq!(
+            db.load_summaries().unwrap().sessions.len(),
+            1,
+            "forgetting the cache entry must not delete the stored row"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.save_summaries(&[s]).unwrap();
+        assert_ne!(
+            before,
+            db.summary_updated_at("claude_code:a").unwrap(),
+            "a forgotten id must no longer be skipped as unchanged"
+        );
     }
 
     #[test]
@@ -479,7 +769,7 @@ mod tests {
         // Reopening re-runs `migrate`, which must be a no-op against an
         // already-migrated file and must not lose existing rows.
         let db = Db::open(&path).unwrap();
-        assert_eq!(db.load_summaries().unwrap().len(), 1);
+        assert_eq!(db.load_summaries().unwrap().sessions.len(), 1);
         // Windows keeps the sqlite file locked while the connection is
         // open; drop it before deleting the file.
         drop(db);
@@ -541,23 +831,154 @@ mod tests {
         migrate(&conn, Path::new(":memory:"), MIGRATIONS).unwrap();
     }
 
+    /// Stand-in for the `0002_*.sql` that a later feature will add. `MIGRATIONS`
+    /// holds exactly one entry today, so the two-step upgrade path has no real
+    /// second step to exercise yet; what these tests check is the sequencing
+    /// and rollback contract around it, not this SQL.
+    const SECOND_MIGRATION: &str = "CREATE TABLE session_labels (\n\
+         session_id TEXT PRIMARY KEY,\n\
+         label TEXT NOT NULL\n\
+     );";
+
+    /// A second migration that does real work before it fails, so a rollback
+    /// has something to undo. A migration that is invalid from its first
+    /// statement would pass the rollback assertions even if `migrate` never
+    /// opened a transaction at all.
+    const SECOND_MIGRATION_THAT_FAILS: &str = "CREATE TABLE session_labels (\n\
+         session_id TEXT PRIMARY KEY,\n\
+         label TEXT NOT NULL\n\
+     );\n\
+     INSERT INTO session_labels (session_id, no_such_column) VALUES ('x', 1);";
+
+    fn migration_scratch_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aperture-db-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Every `(id, data, updated_at)` row in `session_summaries`, so a test can
+    /// assert migration 1's rows are byte-for-byte untouched rather than merely
+    /// still countable.
+    fn summary_rows(conn: &Connection) -> Vec<(String, String, String)> {
+        let mut stmt = conn
+            .prepare("SELECT id, data, updated_at FROM session_summaries ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![name],
+                |r| r.get(0),
+            )
+            .unwrap();
+        count == 1
+    }
+
+    fn user_version(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_second_migration_applies_on_top_of_an_already_migrated_database() {
+        // The realistic upgrade path, which no existing test covers: a file a
+        // previous run already brought to `user_version = 1` and wrote rows
+        // into, opened by a build whose `MIGRATIONS` has grown a second entry.
+        let dir = migration_scratch_dir("upgrade");
+        let path = dir.join("upgrade.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_summaries(&[sample_session("claude_code:a")]).unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(
+            user_version(&conn),
+            1,
+            "setup must leave an already-migrated file, not a fresh one"
+        );
+        let before = summary_rows(&conn);
+        assert_eq!(before.len(), 1, "setup must leave migration 1 with rows in it");
+
+        migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION]).unwrap();
+
+        // Only migration 2 ran. Had `migrate` re-applied migration 1, the
+        // `CREATE TABLE session_summaries` in `0001_init.sql` would have failed
+        // above with "table already exists".
+        assert_eq!(user_version(&conn), 2);
+        assert!(table_exists(&conn, "session_labels"), "migration 2's schema is missing");
+        assert_eq!(summary_rows(&conn), before, "migration 1's rows were disturbed");
+
+        // Windows keeps the sqlite file locked while the connection is open.
+        drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failing_second_migration_leaves_an_already_migrated_database_intact() {
+        // Same setup as above, but migration 2 fails partway. The file must be
+        // left at the post-migration-1 state — its last successfully committed
+        // version, with its rows — and not at a fresh-file state.
+        let dir = migration_scratch_dir("rollback");
+        let path = dir.join("rollback.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_summaries(&[sample_session("claude_code:a")]).unwrap();
+        }
+        let post_migration_1 = std::fs::read(&path).unwrap();
+
+        let conn = Connection::open(&path).unwrap();
+        let before = summary_rows(&conn);
+        let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
+        assert!(result.is_err(), "an invalid migration 2 must surface as an error");
+        // Closing the connection rolls back the still-open transaction, which
+        // is what `Db::open` does when `migrate` returns `Err`.
+        drop(conn);
+
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            post_migration_1,
+            "the file must be byte-identical to the post-migration-1 state"
+        );
+
+        // `migrate`'s documented backup contract: `<path>.bak` holds the state
+        // the file was in before the first pending migration.
+        let backup = PathBuf::from(format!("{}.bak", path.display()));
+        assert_eq!(
+            std::fs::read(&backup).unwrap(),
+            post_migration_1,
+            "the backup must hold the post-migration-1 state"
+        );
+
+        // And the file is still usable at version 1, with migration 1's rows.
+        let conn = Connection::open(&path).unwrap();
+        assert_eq!(user_version(&conn), 1);
+        assert!(
+            !table_exists(&conn, "session_labels"),
+            "migration 2's half-applied schema survived the rollback"
+        );
+        assert_eq!(summary_rows(&conn), before);
+        drop(conn);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn prune_removes_only_old_summaries() {
         let db = Db::in_memory();
         db.save_summaries(&[sample_session("claude_code:fresh")])
             .unwrap();
-        {
-            let guard = db.state.lock().unwrap();
-            let old = (ChronoUtc::now() - chrono::Duration::days(200)).to_rfc3339();
-            guard.conn.execute(
-                "INSERT INTO session_summaries (id, data, updated_at) VALUES ('old', '{}', ?1)",
-                params![old],
-            )
-            .unwrap();
-        }
+        db.insert_aged_summary("old", "{}", 200);
         let removed = db.prune_summaries(90).unwrap();
         assert_eq!(removed, 1);
-        let remaining = db.load_summaries().unwrap();
+        let remaining = db.load_summaries().unwrap().sessions;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].id, "claude_code:fresh");
     }
