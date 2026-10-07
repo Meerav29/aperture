@@ -288,3 +288,219 @@ Rejected:    Reusing the existing invalid-from-statement-one shape, which
              file if wanted.
 Blast radius: Same as the entry above — one `const &str` in the test module.
              No change to `migrate`, `MIGRATIONS`, or any migration SQL.
+
+## 2026-10-05 — slice-4, PR #77
+Question:    Issue #30 asks for retention "gated by a simple last-pruned
+             timestamp" but does not say which clock. Monotonic
+             (`std::time::Instant`, which the loop already keeps as
+             `last_reconcile_instant`) or wall-clock (`DateTime<Utc>`, which
+             the loop already keeps as `last_poll_at`)?
+Chosen:      Wall-clock, as a `DateTime<Utc>` named `last_prune_at`, with
+             `now < last` counted as due. Three reasons, in order of weight.
+             (a) The window being enforced is wall-clock: `prune_summaries`
+             derives its cutoff from `Utc::now()` minus 90 days, so a gate on
+             a different clock measures something other than what it gates.
+             (b) `std::time::Instant` is specified only as monotonically
+             non-decreasing; whether it advances while the machine is
+             suspended is a platform detail, and this loop already has a
+             sleep/wake story it reasons about in wall-clock terms
+             (`is_wake_gap`). A laptop closed overnight should prune on the
+             first reconcile after it wakes, not an hour later.
+             (c) Wall-clock is testable without a clock abstraction: the
+             tests step a `DateTime<Utc>` forward by 5 seconds a tick and
+             drive the real gate, where `Instant` would have needed either a
+             trait or `tokio::time::pause`.
+             The cost of (b) and (c) is that wall-clock can move backwards.
+             `now < last` is therefore treated as due rather than as "not yet":
+             a six-hour NTP correction or a user clock change would otherwise
+             park retention for six hours, and an arbitrary backwards jump
+             parks it indefinitely. One extra indexed `DELETE` is the cheaper
+             mistake, and
+             `a_backwards_clock_jump_does_not_stall_retention` pins it.
+Rejected:    (a) `Instant`-based gating, for the reasons above. (b) Reusing
+             the existing `last_poll_at` as the gate, which would conflate
+             two independent cadences — a change to the reconcile interval
+             would silently change the retention interval.
+Blast radius: `src-tauri/src/lib.rs` — one new `const`, two new free
+             functions (`summary_prune_due`, `prune_summaries_if_due`), one
+             new loop local. No signature in `Db` changes and no SQL changes,
+             so reverting is deleting the gate and the call. An installed
+             database is unaffected either way: retention deletes the same
+             rows the startup prune already deleted, just sooner.
+
+## 2026-10-05 — slice-4, PR #77
+Question:    Where should the periodic prune run, and what should happen when
+             it fails? The issue says "from within the reconcile loop" but the
+             loop does its SQL inside a `spawn_blocking` task, and
+             `prune_summaries` is blocking.
+Chosen:      Fold retention into the reconcile tick's existing
+             `spawn_blocking` closure, after the store and observer guards are
+             dropped, returning `Option<rusqlite::Result<usize>>` so the
+             caller can tell "skipped, no SQL issued" from "ran". On an error
+             the caller still advances `last_prune_at`, so a database that
+             cannot prune is retried in an hour rather than on every 5-second
+             tick.
+Rejected:    (a) A separate `tokio::time::interval` task for retention. It
+             would be a second writer to the one connection the module header
+             documents as "touched only from blocking tasks — see `lib.rs`'s
+             reconcile loop for the single-writer contract", for a job that
+             runs once an hour. (b) A second `spawn_blocking` per tick just to
+             evaluate the gate — 720 task spawns an hour to answer a
+             subtraction. The gate is pure and the closure already holds the
+             `Arc<Db>`. (c) Leaving `last_prune_at` unmoved on error so the
+             next tick retries: on a locked or corrupt database that turns a
+             once-an-hour `DELETE` into one every five seconds, which is the
+             hot-path cost the issue's second criterion exists to prevent.
+Blast radius: Same two functions plus the `match` that replaced the loop's
+             `if let Err(e) = …` on the join result. The reconcile call itself
+             is unchanged — it moved inside a block so its guards drop before
+             retention runs. The `Err(e) => eprintln!("Observer failed: {e}")`
+             arm preserves the previous behavior for a panicked task.
+
+## 2026-10-07 — slice-5, PR #81
+Question:    Issue #43 suggests
+             `set_missed_tick_behavior(MissedTickBehavior::Delay)` but says
+             "(or equivalent)", and tokio offers two non-default policies that
+             both satisfy the issue's "collapse missed ticks into a single
+             catch-up tick": `Delay` (the next deadline becomes `now + period`,
+             so two ticks are never closer than the period) and `Skip` (the
+             next deadline is the next multiple of the period measured from the
+             interval's original start, so the original phase is preserved).
+             Nothing in `docs/specification.md` picks between them.
+Chosen:      `Delay`. The property this slice exists to guarantee is a *floor*
+             on the spacing between reconciles, because what a reconcile costs
+             is a transcript re-scan, a SQLite write and a `push_snapshot`
+             event, and `docs/specification.md` §3 "IPC and UI updates" caps
+             snapshots at ten a second. `Delay` provides that floor by
+             construction: the period restarts from the tick that fired, so
+             after any gap of any size the next tick is a full
+             `RECONCILE_INTERVAL_SECS` away.
+             `Skip` does not. It realigns to the original phase, so the gap
+             between the catch-up tick and the one after it is whatever is left
+             of the current period — anywhere from a full period down to very
+             nearly zero, depending only on where in the 5-second grid the
+             machine happened to wake. A wake at 600.001s after start gives
+             4.999s; a wake at 604.999s gives 1ms. That is a second reconcile
+             arbitrarily close behind the first, which is the burst this issue
+             is about, smaller. Measured, not assumed: with `Skip` substituted
+             for `Delay`, `a_suspend_gap_yields_one_catch_up_reconcile_not_a_
+             storm` fails with `[0ns, 4.999s, 5s]` — the test's simulated
+             suspend is deliberately 600.001s rather than a round ten minutes
+             so that it can tell the two policies apart at all.
+             Phase alignment, the thing `Skip` buys, is worth nothing here:
+             the loop is woken by filesystem signals as well as the interval,
+             so reconciles are already not on a fixed grid, and no requirement
+             asks for one.
+Rejected:    (a) `Skip`, above. (b) Leaving the `Burst` default and instead
+             draining the backlog by hand at the top of the loop — a
+             `while interval.poll_tick().is_ready()` style drain. It reaches
+             the same outcome through a hand-rolled version of what the policy
+             already does, keeps the misleading `Burst` reading of the timer
+             in the source, and adds a `poll`-level construct to a loop that
+             currently reads as plain `async`/`await`. (c) Reducing
+             `RECONCILE_INTERVAL_SECS` or reaching for an OS power-event API:
+             neither is this issue, and the design doc's non-goals rule the
+             second out.
+Blast radius: `src-tauri/src/lib.rs` — one new `fn reconcile_interval()`, one
+             `use` line, and the two lines in `tauri::Builder::setup` that
+             built the interval inline. No const, signature, schema, migration
+             or frontend change. Fully reversible: delete the
+             `set_missed_tick_behavior` call and the behavior is tokio's
+             default again. Nothing persists, so there is no state to migrate
+             in either direction.
+
+## 2026-10-07 — slice-5, PR #81
+Question:    Issue #43's second criterion asks for "a test or documented manual
+             check" that a simulated multi-tick gap yields at most one
+             immediate reconcile. The reconcile loop lives inside
+             `tauri::Builder::setup`, which no test can enter — the same gap
+             slice-4's review recorded as a carry-forward. So is the criterion
+             met by a test, or does it fall to a manual check the owner has to
+             perform on a real machine?
+Chosen:      By a test, after lifting the loop's wait step into
+             `async fn wait_for_reconcile(interval, watch_rx,
+             last_reconcile_instant)`. The `tokio::select!` moved verbatim;
+             the loop body now calls it. That makes the thing under test the
+             real wait the real loop performs, driven by
+             `#[tokio::test(start_paused = true)]` plus
+             `tokio::time::advance`, rather than a reimplementation of the
+             select in the test module.
+             The limit, stated rather than papered over: the test measures
+             **when the loop would be released to run**, not the reconcile or
+             the `push_snapshot` that follows. Those are still unreachable, so
+             "at most one reconcile/snapshot" is proved at the timer that
+             drives them and inferred, not observed, one step downstream. One
+             release of the wait is one iteration of the loop, so the
+             inference is tight, but it is an inference. This slice narrows
+             slice-4's carry-forward; it does not close it.
+             `test-util` is added to tokio under `[dev-dependencies]`, so the
+             paused clock is a test-only feature and the shipped binary does
+             not carry it (resolver v2 does not enable dev-dependency features
+             for a normal build). `Cargo.lock` is unchanged — `test-util`
+             pulls in no new crate.
+Rejected:    (a) A documented manual check, i.e. asking the owner to suspend a
+             laptop and read stderr. It is the slower half of the criterion's
+             "or", it spends the scarce resource `docs/roadmap.md` is built
+             around (the owner's review hour), and `AGENTS.md`'s bar on
+             evidence cuts the other way too: a test that fails without the
+             change is better evidence about the code than a one-off
+             observation, even though neither is evidence about a real host.
+             (b) Testing `reconcile_interval()` alone, with the `select!` left
+             inline in the loop. It would pin the policy without proving the
+             loop uses it, and the loop building its own interval inline is
+             exactly how the `Burst` default survived unnoticed.
+             (c) Extracting the whole tick body — reconcile, retention,
+             `push_snapshot` — into a callable function so iterations could be
+             counted outright. That is the refactor that would actually close
+             slice-4's carry-forward, and it needs a seam for the `AppHandle`
+             that `push_snapshot` takes. Out of proportion to this slice, and
+             it would put the diff well past the point where it stops being
+             reviewable in half an hour.
+Blast radius: `src-tauri/src/lib.rs` (the `select!` moved out of the loop into
+             `wait_for_reconcile`, called with the same three values it read
+             from scope before) and `src-tauri/Cargo.toml` (one
+             `[dev-dependencies]` block). The select's arms, the drain loops
+             and the `watcher_reconcile_delay` call are byte-identical to what
+             was inline. Reverting is inlining the body again.
+
+## 2026-10-07 — slice-5, PR #81
+Question:    The queue says issue #54 — the wake-gap log claiming "forcing full
+             reconciliation" when the reconcile that follows is the ordinary
+             incremental one — "touches the same lines; fix the log message
+             only if it falls out of the change". #54 itself offers two routes:
+             reword the log to describe what happens, **or** implement a
+             genuinely different wake-gap path (a non-incremental rescan of all
+             roots). Which, and does it fall out of this change at all?
+Chosen:      Reword only, and yes it falls out: the three lines above the
+             `eprintln!` are the lines this slice rewrites, and the sentence
+             "forcing full reconciliation" is now wrong in a second way as
+             well as the first. Before this change a wake produced a storm of
+             reconciles; after it, exactly one. A reader reconciling that log
+             line against the new behavior would be reading a claim that was
+             never true about the path's content and is now also wrong about
+             its count. Leaving it would mean shipping a change to post-wake
+             behavior while the only post-wake log line describes something
+             else.
+             The new text names the gap, says the process was probably
+             suspended, and says the reconcile is the normal incremental one
+             and not a full rescan — nothing the code does not do.
+Rejected:    (a) The second route, implementing a real full rescan on a wake
+             gap. It is a behavior change to recovery semantics that nothing in
+             this slice requires, it would need its own evidence about whether
+             an incremental reconcile actually misses anything across a
+             suspend — which is host evidence this routine cannot produce — and
+             the queue scoped the log to "only if it falls out".
+             (b) Leaving the message alone as out of scope. The queue permits
+             the fix on exactly this condition and asks that the PR say so,
+             which it does.
+             Not claimed: that this closes #54. The reword satisfies #54's
+             first acceptance route for this one log line, and whether that is
+             enough to close the issue or whether the owner wants the real
+             rescan instead is the owner's call. No regression test covers the
+             wording; it is a string literal, and a test asserting its text
+             would pin the phrasing rather than any behavior.
+Blast radius: `src-tauri/src/lib.rs` — one `eprintln!` format string and the
+             comment above it. `is_wake_gap`, its threshold, its two existing
+             tests and the `if` that gates the log are untouched, so the
+             detection logic and when the line is emitted are unchanged. Only
+             the words change.

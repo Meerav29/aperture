@@ -152,9 +152,67 @@ Acceptance (from the issue — do not weaken):
 
 ## slice-4 — Issue #30: run `prune_summaries` during a long-running process
 
-Status: todo
+Status: merged
+PR: [#77](https://github.com/Meerav29/aperture/pull/77) — merged to `auto/queue`
+by the review routine 2026-10-05 as `e42c33f`.
 Issue: [#30](https://github.com/Meerav29/aperture/issues/30)
 Code: `src-tauri/src/observer/db.rs` (`prune_summaries`), startup/reconcile wiring
+
+Both of issue #30's criteria were verified against the diff rather than against
+the PR body. CI was green on `fe09a28` — both jobs, `rust` on `windows-latest`.
+The diff is 283 lines across 4 files, well inside the 600-line review cap, and
+touches nothing outside the slice: `lib.rs` (the change), a `#[cfg(test)]`
+`insert_aged_summary` helper in `db.rs` that the retention test needs,
+`decisions.md`, and this file.
+
+The wiring is live on the production path and not only in tests: the reconcile
+loop computes `now = Utc::now()` each tick and calls `prune_summaries_if_due`
+inside the `spawn_blocking` task it already spawns, after the observer and store
+guards drop, advancing `last_prune_at` on both the success and the error arm. So
+a failed prune is retried in an hour rather than on every 5-second tick, which
+is the hot-path cost criterion 2 exists to prevent.
+
+**The review routine could not execute `cargo test` in its sandbox** — the test
+command was blocked by the environment's permission classifier, not by a missing
+toolchain (the Tauri system deps were installed successfully first). Both of the
+PR's mutation claims were therefore re-derived from the test source rather than
+re-run, and both hold exactly as stated: with `prune_summaries_if_due` returning
+`None` unconditionally — precisely the pre-change behavior — only
+`a_long_running_process_prunes_an_expired_summary_without_restarting` and
+`retention_does_not_run_on_every_reconcile_tick` fail, because the three
+remaining new tests drive the pure `summary_prune_due` predicate directly (2
+failures, 68 pass). With `summary_prune_due` returning `true` unconditionally,
+those two fail on their pass counts (720 and 1440 against the asserted 1 and 2)
+along with `retention_is_not_due_before_the_interval_elapses` (3 failures, 67
+pass). The first break is the one criterion 1 turns on. The assertions reach
+real SQLite rather than a mock: `insert_aged_summary` backdates `updated_at`
+directly and `summary_updated_at` reads the column back, against the same
+`updated_at < cutoff` predicate `prune_summaries` issues.
+
+Two things carried forward, neither blocking:
+
+- **The production call site is not test-protected.** Deleting the
+  `prune_summaries_if_due(&d, prune_from, now)` line from the reconcile loop
+  leaves all 70 tests green, because the loop lives inside
+  `tauri::Builder::setup` and no test reaches it. The helper is the testable
+  seam and the tests sit on it, so the behavior does have failing-without cover;
+  what is missing is regression cover on one line of wiring. This is the same
+  gap PR #10's review flagged in grid-prophet, and it is structurally harder to
+  close here than it was there — extracting the tick body into a callable
+  function would be the way, and that is a refactor this slice did not need.
+- **The PR body understates its own `db.rs` change.** It says "no change to
+  `Db::prune_summaries` or any other `Db` signature," which is true of
+  production code, but the diff does add a new `#[cfg(test)]` method to `Db` and
+  rewrites the existing `prune_summaries` test to use it. Harmless and in scope
+  — the refactor removes a hand-rolled `INSERT` from that test — but the body
+  reads as though `db.rs` were untouched.
+
+The PR's own honesty is worth recording: it states that its simulated clock
+drives the gate only, that `prune_summaries` still derives its cutoff from the
+real `Utc::now()` so a row cannot be made to *cross* the window mid-test, and
+that nothing here is evidence about a real host, a soak, or bounded memory over
+an 8- or 24-hour run. That last measurement remains issue #13's. `AGENTS.md`'s
+bar against turning missing evidence into success is met.
 
 Queued 2026-10-01 after the queue ran dry. Storage-layer correctness in the same
 area as slices 1-3; no host evidence needed. Acceptance is in the issue; do not
@@ -166,9 +224,64 @@ by the periodic path. `cargo test` and `npm run build` must pass.
 
 ## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
 
-Status: todo
+Status: merged
+PR: [#81](https://github.com/Meerav29/aperture/pull/81) — merged to `auto/queue`
+by the review routine 2026-10-07 as `5e694a3`.
 Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
 Code: `src-tauri/src/lib.rs` (reconcile loop)
+
+`reconcile_interval()` sets `MissedTickBehavior::Delay`; the loop's
+`tokio::select!` wait moved into `wait_for_reconcile` so the cadence is
+reachable from a test at all. Four paused-clock tests; two of them fail
+without the change (`Burst` restored: 72 pass, 2 fail — and the suspend test's
+failure output is `[0ns, 0ns, 0ns]`, the storm itself), one also fails under
+the rejected `Skip` policy (`[0ns, 4.999s, 5s]`). The other two are labelled
+guards, not evidence. `cargo test` (74 passed) and `npm run build` both ran in
+a Linux sandbox after installing the Tauri system libraries, and CI was green
+on `ee71a42` — both jobs, `rust` on `windows-latest`.
+
+**Both mutation claims were re-run by the review routine, not read.** With
+`set_missed_tick_behavior` removed — precisely the pre-change tree — the suite
+reports 72 passed, 2 failed, and the suspend test's own output is
+`got [0ns, 0ns, 0ns]`, the storm itself, matching the PR body verbatim; the
+overrun test fails alongside it. With `Skip` substituted for `Delay` the suite
+reports 73 passed, 1 failed, `got [0ns, 4.999s, 5s]` — the sub-period second
+reconcile Decision 1 rejects. Every pre-existing test passes under both
+substitutions, and both of the PR's self-labelled guard tests
+(`the_steady_state_cadence_is_one_reconcile_per_interval`,
+`a_watcher_signal_does_not_consume_an_interval_tick`) pass under `Burst` as the
+body says they do. `cargo test --locked` (74 passed) and `npm run build` (tsc
+clean, 34 modules) were both re-run in the review sandbox against the pristine
+head; `--locked` passing is independent confirmation of the body's claim that
+`test-util` adds no crate and `Cargo.lock` is unchanged. The diff is 408 lines
+across 4 files, inside the 600-line cap, and the extracted `select!` is
+byte-identical to the block it replaced — `last_reconcile_instant` is `Copy`
+and the loop reassigns its own copy at the end of every iteration, so passing
+it by value changes nothing.
+
+**Two documentation defects, neither blocking, both worth fixing in the next
+slice that touches these files.** The three new `decisions.md` entries are
+headed `PR #TBD` — the second commit filled the PR number into this file but
+not into that one, and no earlier entry in `decisions.md` uses a placeholder.
+And the PR body has no `## Deliberately not included` section, which spec §9
+lists as required; its content is genuinely present, spread across "On #54",
+"Observed, not changed" and the Decisions' *Rejected* lists, and PR #77 was
+merged with the same omission, so this was not treated as a rejection — but it
+is now two slices running.
+
+Carried forward, in the PR under "Acceptance criteria" and "Observed, not
+changed": the test measures when the loop is *released to run*, not the
+reconcile and `push_snapshot` that follow, because the loop body is still
+inside `tauri::Builder::setup` — this narrows slice-4's carry-forward rather
+than closing it. And `is_wake_gap`'s doc comment now claims slightly more than
+it can ("can only come from lost wall-clock time"), since under `Delay` a
+single 90s reconcile pass can trip the detector; not changed, as the threshold
+would need issue #13's numbers.
+
+#54's log message was reworded, which the queue permits "only if it falls out
+of the change" — the PR argues it does and says so. **#54 is not closed by
+this**: its other route, a genuinely different wake-gap rescan, needs host
+evidence and is the owner's call.
 
 Set an explicit `MissedTickBehavior` and prove with a paused-clock test that a
 long gap yields one reconcile, not a storm. Do not claim real sleep/wake

@@ -391,6 +391,27 @@ impl Db {
             .expect("insert raw summary");
     }
 
+    /// Test-only writer: plant a summary row whose `updated_at` is
+    /// `days_ago` days in the past, so a retention test can age a row
+    /// instead of waiting for one. Writing the column directly is the only
+    /// way to do it — `save_summaries` always stamps `Utc::now()`, and
+    /// retention reads `updated_at`, not anything inside `data`.
+    #[cfg(test)]
+    pub(crate) fn insert_aged_summary(&self, id: &str, data: &str, days_ago: i64) {
+        let at = (Utc::now() - chrono::Duration::days(days_ago)).to_rfc3339();
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .execute(
+                "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(id) DO UPDATE SET data = excluded.data,
+                     updated_at = excluded.updated_at",
+                params![id, data, at],
+            )
+            .expect("insert aged summary");
+    }
+
     /// Test-only accessor: the raw `updated_at` column for one cursor row.
     /// See `summary_updated_at`.
     #[cfg(test)]
@@ -954,15 +975,7 @@ mod tests {
         let db = Db::in_memory();
         db.save_summaries(&[sample_session("claude_code:fresh")])
             .unwrap();
-        {
-            let guard = db.state.lock().unwrap();
-            let old = (ChronoUtc::now() - chrono::Duration::days(200)).to_rfc3339();
-            guard.conn.execute(
-                "INSERT INTO session_summaries (id, data, updated_at) VALUES ('old', '{}', ?1)",
-                params![old],
-            )
-            .unwrap();
-        }
+        db.insert_aged_summary("old", "{}", 200);
         let removed = db.prune_summaries(90).unwrap();
         assert_eq!(removed, 1);
         let remaining = db.load_summaries().unwrap().sessions;
