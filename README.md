@@ -21,6 +21,7 @@ is pending a friend with a Mac; Windows evidence does not establish Mac support.
   behavior, verification, and phases from right now through production readiness.
 - [Immediate spike](SPIKE.md): Phase 0 checklist and compatibility evidence.
 - [Observer decision](docs/adr/0001-observer-first.md): why sessions remain externally owned.
+- [Branch model](docs/branching.md): `main` is production, `staging` is the integrated latest app.
 - [macOS handoff](docs/validation/macos-checklist.md): clone/build/manual validation instructions.
 
 ## Run it

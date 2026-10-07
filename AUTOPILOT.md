@@ -9,6 +9,10 @@ ones that passed CI and review.
 **None of it is on `main`.** Everything landed on the `auto/queue` branch.
 `main` has only the setup commit that added this file, CI, and the queue.
 
+> **Update, 2026-10-04:** `auto/queue` has since been consolidated into the
+> `staging` branch (the integrated latest app; `main` stays production). Review
+> and promote via `staging` → `main`. See [docs/branching.md](docs/branching.md).
+
 ## Review this in order
 
 1. **[docs/autopilot/decisions.md](docs/autopilot/decisions.md)** — every design
@@ -36,8 +40,8 @@ That means:
   real machine.
 - **Nothing here is macOS evidence.** The friend handoff is untouched.
 - A green CI run in these PRs is evidence about code, not about a host.
-- `docs/goals.md` was not edited — it is stale per #22, which is in flight on
-  the `claude/github-quick-wins-1m20eg` branch.
+- `docs/goals.md` was not edited by autopilot. Its staleness (#22) was fixed
+  separately and is now on `staging`.
 - The CI workflow added at setup **half-addresses #24**. Frontend test tooling
   is still missing, so don't close that issue on the workflow alone.
 
