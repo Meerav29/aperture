@@ -25,3 +25,11 @@ open = "5"
 rusqlite = { version = "0.31", features = ["bundled"] }
 notify = "6"
 notify-debouncer-mini = "0.4"
+
+# `test-util` gives the paused clock (`#[tokio::test(start_paused = true)]`,
+# `tokio::time::advance`) the reconcile-cadence tests in `lib.rs` need to
+# simulate an OS suspend without sleeping for real. Dev-only: under resolver
+# v2 a dev-dependency feature is not enabled for a normal build, so the
+# shipped binary does not carry tokio's test clock.
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
