@@ -224,7 +224,7 @@ by the periodic path. `cargo test` and `npm run build` must pass.
 
 ## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
 
-Status: todo
+Status: in-progress
 Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
 Code: `src-tauri/src/lib.rs` (reconcile loop)
 
