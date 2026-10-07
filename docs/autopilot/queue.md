@@ -224,9 +224,9 @@ by the periodic path. `cargo test` and `npm run build` must pass.
 
 ## slice-5 — Issue #43: reconcile `interval` bursts after sleep/wake
 
-Status: in-review
-PR: [#81](https://github.com/Meerav29/aperture/pull/81) — opened against
-`auto/queue` 2026-10-07.
+Status: merged
+PR: [#81](https://github.com/Meerav29/aperture/pull/81) — merged to `auto/queue`
+by the review routine 2026-10-07 as `5e694a3`.
 Issue: [#43](https://github.com/Meerav29/aperture/issues/43)
 Code: `src-tauri/src/lib.rs` (reconcile loop)
 
@@ -237,9 +237,37 @@ without the change (`Burst` restored: 72 pass, 2 fail — and the suspend test's
 failure output is `[0ns, 0ns, 0ns]`, the storm itself), one also fails under
 the rejected `Skip` policy (`[0ns, 4.999s, 5s]`). The other two are labelled
 guards, not evidence. `cargo test` (74 passed) and `npm run build` both ran in
-a Linux sandbox after installing the Tauri system libraries; the
-`windows-latest` gate was pending when the PR body was written and the body
-says so rather than guessing.
+a Linux sandbox after installing the Tauri system libraries, and CI was green
+on `ee71a42` — both jobs, `rust` on `windows-latest`.
+
+**Both mutation claims were re-run by the review routine, not read.** With
+`set_missed_tick_behavior` removed — precisely the pre-change tree — the suite
+reports 72 passed, 2 failed, and the suspend test's own output is
+`got [0ns, 0ns, 0ns]`, the storm itself, matching the PR body verbatim; the
+overrun test fails alongside it. With `Skip` substituted for `Delay` the suite
+reports 73 passed, 1 failed, `got [0ns, 4.999s, 5s]` — the sub-period second
+reconcile Decision 1 rejects. Every pre-existing test passes under both
+substitutions, and both of the PR's self-labelled guard tests
+(`the_steady_state_cadence_is_one_reconcile_per_interval`,
+`a_watcher_signal_does_not_consume_an_interval_tick`) pass under `Burst` as the
+body says they do. `cargo test --locked` (74 passed) and `npm run build` (tsc
+clean, 34 modules) were both re-run in the review sandbox against the pristine
+head; `--locked` passing is independent confirmation of the body's claim that
+`test-util` adds no crate and `Cargo.lock` is unchanged. The diff is 408 lines
+across 4 files, inside the 600-line cap, and the extracted `select!` is
+byte-identical to the block it replaced — `last_reconcile_instant` is `Copy`
+and the loop reassigns its own copy at the end of every iteration, so passing
+it by value changes nothing.
+
+**Two documentation defects, neither blocking, both worth fixing in the next
+slice that touches these files.** The three new `decisions.md` entries are
+headed `PR #TBD` — the second commit filled the PR number into this file but
+not into that one, and no earlier entry in `decisions.md` uses a placeholder.
+And the PR body has no `## Deliberately not included` section, which spec §9
+lists as required; its content is genuinely present, spread across "On #54",
+"Observed, not changed" and the Decisions' *Rejected* lists, and PR #77 was
+merged with the same omission, so this was not treated as a rejection — but it
+is now two slices running.
 
 Carried forward, in the PR under "Acceptance criteria" and "Observed, not
 changed": the test measures when the loop is *released to run*, not the
