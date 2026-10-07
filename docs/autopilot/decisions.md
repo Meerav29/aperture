@@ -357,7 +357,7 @@ Blast radius: Same two functions plus the `match` that replaced the loop's
              retention runs. The `Err(e) => eprintln!("Observer failed: {e}")`
              arm preserves the previous behavior for a panicked task.
 
-## 2026-10-07 — slice-5, PR #TBD
+## 2026-10-07 — slice-5, PR #81
 Question:    Issue #43 suggests
              `set_missed_tick_behavior(MissedTickBehavior::Delay)` but says
              "(or equivalent)", and tokio offers two non-default policies that
@@ -409,7 +409,7 @@ Blast radius: `src-tauri/src/lib.rs` — one new `fn reconcile_interval()`, one
              default again. Nothing persists, so there is no state to migrate
              in either direction.
 
-## 2026-10-07 — slice-5, PR #TBD
+## 2026-10-07 — slice-5, PR #81
 Question:    Issue #43's second criterion asks for "a test or documented manual
              check" that a simulated multi-tick gap yields at most one
              immediate reconcile. The reconcile loop lives inside
@@ -463,7 +463,7 @@ Blast radius: `src-tauri/src/lib.rs` (the `select!` moved out of the loop into
              and the `watcher_reconcile_delay` call are byte-identical to what
              was inline. Reverting is inlining the body again.
 
-## 2026-10-07 — slice-5, PR #TBD
+## 2026-10-07 — slice-5, PR #81
 Question:    The queue says issue #54 — the wake-gap log claiming "forcing full
              reconciliation" when the reconcile that follows is the ordinary
              incremental one — "touches the same lines; fix the log message
