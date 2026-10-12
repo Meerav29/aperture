@@ -70,7 +70,14 @@ impl HookPayload {
     }
 }
 
-fn shorten(s: &str, max: usize) -> String {
+/// First line of `s`, truncated to `max` characters with a trailing `…`.
+///
+/// Shared with `commands::sanitize_db_error` (issue #50) rather than copied:
+/// the two callers want the same two properties for the same reason — a
+/// string that reaches a single-line UI field must not carry newlines, and
+/// must not be unbounded. Counts `chars`, not bytes, so a multi-byte string
+/// is never cut mid-codepoint.
+pub fn shorten(s: &str, max: usize) -> String {
     let s = s.lines().next().unwrap_or(s);
     if s.chars().count() <= max {
         s.to_string()

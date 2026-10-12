@@ -293,7 +293,7 @@ the log message only if it falls out of the change, and say so in the PR.
 
 ## slice-6 — Issue #50: `storage_health` discards the real error
 
-Status: todo
+Status: in-progress
 Issue: [#50](https://github.com/Meerav29/aperture/issues/50)
 Code: `src-tauri/src/observer/` (`storage_health`)
 

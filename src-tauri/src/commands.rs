@@ -1,5 +1,6 @@
 use crate::observer::{
     db::Db,
+    hook_payload::shorten,
     model::{Session, Snapshot},
     passive::Observer,
     state::{Store, LIVE_STORE_IDLE_DAYS},
@@ -28,8 +29,16 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     observer.poll(store);
     let sessions = store.snapshot().sessions;
     let cursors = observer.export_cursors();
-    let summaries_ok = db.save_summaries(&sessions).is_ok();
-    let cursors_ok = db.save_cursors(&cursors).is_ok();
+    // Issue #50: `.is_ok()` here collapsed whatever `rusqlite::Error` the
+    // write returned into a bare `bool` before `storage_health` could see
+    // it, so the health row had one sentence for every cause.
+    let write_failures: Vec<WriteFailure> = [
+        write_failure(SUMMARY_WRITE, db.save_summaries(&sessions)),
+        write_failure(CURSOR_WRITE, db.save_cursors(&cursors)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
 
     // Eviction runs *after* the save, not before (issue #17). Backfill
     // discovers old transcripts, so a session can enter the store already
@@ -46,10 +55,57 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
     let idle_not_restored = store.idle_not_restored;
     store.integrations.push(storage_health(
         db,
-        summaries_ok && cursors_ok,
+        &write_failures,
         evicted_idle,
         idle_not_restored,
     ));
+}
+
+/// Which durable write failed, in words the health row can print. Named
+/// after the SQLite tables so a reported failure points at a real object in
+/// the database rather than at a Rust function name.
+const SUMMARY_WRITE: &str = "session summaries";
+const CURSOR_WRITE: &str = "file cursors";
+
+/// How many characters of a SQLite error message reach the health row.
+/// Bounded because `detail` is rebuilt every reconcile cycle and shipped in
+/// every snapshot event, which `docs/specification.md` §3 caps at ten per
+/// second. A ceiling, not a budget: SQLite's own messages are short.
+const MAX_DB_ERROR_CHARS: usize = 200;
+
+/// One durable write that failed this cycle, carrying the error SQLite
+/// actually returned. Issue #50: both save call sites were reduced to
+/// `bool` with `.is_ok()`, so by the time `storage_health` ran the one fact
+/// worth acting on — locked file? full disk? permissions? missing table? —
+/// was already gone.
+struct WriteFailure {
+    /// Which write failed — `SUMMARY_WRITE` or `CURSOR_WRITE`.
+    what: &'static str,
+    /// The error, rendered for display by `sanitize_db_error`.
+    detail: String,
+}
+
+/// `Some(WriteFailure)` when `result` is an error, `None` when it succeeded.
+fn write_failure(what: &'static str, result: rusqlite::Result<()>) -> Option<WriteFailure> {
+    result
+        .err()
+        .map(|e| WriteFailure { what, detail: sanitize_db_error(&e) })
+}
+
+/// Render a `rusqlite::Error` for the storage health row: first line only,
+/// capped at `MAX_DB_ERROR_CHARS` characters on a character boundary.
+///
+/// That is all "sanitized" means here — the message text is passed through
+/// as SQLite produced it. SQLite's diagnostics name schema objects and
+/// failure conditions and do not echo bound parameter values, and the one
+/// parameter carrying user content (the serialized `Session` blob) is bound,
+/// never interpolated; a `CannotOpen`/`IoErr` message can name the database
+/// path, which this row already publishes verbatim as `root`. That is an
+/// argument from how SQLite reports errors, not a property any test here
+/// proves, and it stops holding for a future caller that interpolates user
+/// content into SQL. Decision 1 in `docs/autopilot/decisions.md`.
+fn sanitize_db_error(e: &rusqlite::Error) -> String {
+    shorten(&e.to_string(), MAX_DB_ERROR_CHARS)
 }
 
 /// Synthetic health row reporting whether SQLite persistence succeeded on
@@ -59,18 +115,21 @@ pub fn reconcile_and_persist(observer: &mut Observer, store: &mut Store, db: &Db
 ///
 /// Distinguishes three states: writes succeeded against a durable,
 /// file-backed `Db` (`"ok"`); a durable `Db` had a write fail this cycle
-/// (`"degraded"`, save failure detail); or `db` is in-memory-only, e.g.
-/// because `lib.rs` fell back to `Db::in_memory()` after `Db::open` failed
-/// (`"degraded"`, in-memory detail) — in that last case saves always
-/// succeed against the in-memory connection, so `ok` alone can't tell this
-/// case apart from real persistence.
+/// (`"degraded"`, naming which write failed and the error SQLite returned —
+/// issue #50); or `db` is in-memory-only, e.g. because `lib.rs` fell back to
+/// `Db::in_memory()` after `Db::open` failed (`"degraded"`, in-memory
+/// detail) — in that last case saves always succeed against the in-memory
+/// connection, so an empty `write_failures` alone can't tell this case apart
+/// from real persistence.
 ///
 /// Note: because writes are content-aware, `save_summaries`/`save_cursors`
 /// may skip SQLite entirely on a cycle where nothing changed — so `"ok"`
 /// here means "no write failed this cycle", not "a write was attempted and
 /// succeeded". A database that silently became unwritable while the app was
 /// idle (nothing changed) won't be caught until there's actually something
-/// new to persist.
+/// new to persist. That is unchanged by issue #50: a richer message for a
+/// failure that *was* reported does not make an unattempted write report
+/// one.
 ///
 /// It also reports rows the startup `load_summaries` could not deserialize
 /// (issue #18). That is a read-side failure, not a write-side one, so it is
@@ -97,15 +156,26 @@ fn plural(n: usize, one: &'static str, many: &'static str) -> &'static str {
     }
 }
 
+/// `["a"]` -> `"a"`, `["a", "b"]` -> `"a and b"`, `["a", "b", "c"]` ->
+/// `"a, b and c"`. Only one or two causes exist today — there are exactly
+/// two durable writes — but a list keeps a third from reading badly.
+fn join_with_and(parts: &[String]) -> String {
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 fn storage_health(
     db: &Db,
-    ok: bool,
+    write_failures: &[WriteFailure],
     evicted_idle: usize,
     idle_not_restored: usize,
 ) -> crate::observer::model::IntegrationHealth {
     let durable = db.is_durable();
     let unreadable = db.unreadable_summaries();
-    let state = if durable && ok && unreadable == 0 {
+    let state = if durable && write_failures.is_empty() && unreadable == 0 {
         "ok"
     } else {
         "degraded"
@@ -115,10 +185,19 @@ fn storage_health(
         details.push(
             "in-memory only: database unavailable, history will not survive a restart.".to_string(),
         );
-    } else if !ok {
-        details.push(
-            "SQLite write failed this cycle; running in-memory only until it recovers.".to_string(),
-        );
+    } else if !write_failures.is_empty() {
+        // One clause per failed write: the two writes go to different tables
+        // and can fail differently in the same cycle, so folding them would
+        // have to drop one error — the `.is_ok()` loss, one level up.
+        let causes: Vec<String> = write_failures
+            .iter()
+            .map(|f| format!("{} ({})", f.what, f.detail))
+            .collect();
+        details.push(format!(
+            "SQLite write failed this cycle saving {}; running in-memory only until it \
+             recovers.",
+            join_with_and(&causes),
+        ));
     }
     if unreadable > 0 {
         details.push(format!(
@@ -521,6 +600,218 @@ mod tests {
 
         drop(db);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A fresh scratch directory, mirroring `db.rs`'s `migration_scratch_dir`.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("aperture-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    /// `scratch_dir` plus one Claude Code transcript under `<root>/claude`,
+    /// so the observer exports a cursor for `save_cursors` to write. With no
+    /// cursors `save_cursors` returns `Ok` without touching SQLite.
+    fn root_with_one_transcript(name: &str) -> PathBuf {
+        let root = scratch_dir(name);
+        std::fs::create_dir_all(root.join("claude")).unwrap();
+        let line = serde_json::json!({
+            "type":"user","sessionId":"c1","timestamp":Utc::now().to_rfc3339(),
+            "message":{"content":"hi"}
+        })
+        .to_string();
+        std::fs::write(root.join("claude").join("s.jsonl"), format!("{line}\n")).unwrap();
+        root
+    }
+
+    /// A store holding one session, so `save_summaries` has something to
+    /// write. With an empty store `changed` is empty and `save_summaries`
+    /// returns `Ok` without touching SQLite — a write-failure test that
+    /// forgot this would pass against the broken code too.
+    fn store_with_one_session() -> Store {
+        let mut store = Store::default();
+        let s = Session::new("claude_code:a".into(), "/repo".into(), Utc::now());
+        store.sessions.insert(s.id.clone(), s);
+        store
+    }
+
+    fn storage_detail(store: &Store) -> &str {
+        &store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present")
+            .detail
+    }
+
+    #[test]
+    fn a_failed_summary_write_reports_the_error_sqlite_returned() {
+        use crate::observer::db::Db;
+
+        // Issue #50: the row said only "SQLite write failed this cycle" for
+        // every cause. A real read-only connection produces a real
+        // `SQLITE_READONLY`, and its text must reach the row.
+        let root = scratch_dir("health-readonly");
+        let path = root.join("readonly.db");
+        drop(Db::open(&path).unwrap());
+
+        let db = Db::open_read_only(&path).unwrap();
+        assert!(db.is_durable(), "this must be the failed-write case, not the in-memory one");
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = store_with_one_session();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let storage = store
+            .integrations
+            .iter()
+            .find(|h| h.provider == "storage")
+            .expect("a storage health row must be present");
+        assert_eq!(storage.state, "degraded");
+        assert!(
+            storage.detail.contains("readonly"),
+            "the detail must carry the error SQLite returned, not just the \
+             generic sentence: {}",
+            storage.detail
+        );
+        assert!(
+            storage.detail.contains("session summaries"),
+            "the detail must name which write failed: {}",
+            storage.detail
+        );
+        assert!(
+            !storage.detail.contains("in-memory only: database unavailable"),
+            "a durable database whose write failed is not the in-memory \
+             fallback case: {}",
+            storage.detail
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn two_different_write_failures_produce_two_different_messages() {
+        use crate::observer::db::Db;
+
+        // The criterion issue #50 turns on. Both of these rendered the same
+        // fixed string before, so the row could not tell a database you
+        // cannot write from one whose table is gone.
+        let root = scratch_dir("health-two-errors");
+        let readonly_path = root.join("readonly.db");
+        drop(Db::open(&readonly_path).unwrap());
+        let readonly = Db::open_read_only(&readonly_path).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut readonly_store = store_with_one_session();
+        reconcile_and_persist(&mut observer, &mut readonly_store, &readonly);
+        let readonly_detail = storage_detail(&readonly_store).to_string();
+
+        let missing_path = root.join("missing-table.db");
+        let missing = Db::open(&missing_path).unwrap();
+        missing.drop_table_for_test("session_summaries");
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut missing_store = store_with_one_session();
+        reconcile_and_persist(&mut observer, &mut missing_store, &missing);
+        let missing_detail = storage_detail(&missing_store).to_string();
+
+        assert!(
+            readonly_detail.contains("readonly"),
+            "expected the read-only error: {readonly_detail}"
+        );
+        assert!(
+            missing_detail.contains("no such table"),
+            "expected the missing-table error: {missing_detail}"
+        );
+        assert_ne!(
+            readonly_detail, missing_detail,
+            "two different failures must not render as one generic sentence"
+        );
+
+        drop(readonly);
+        drop(missing);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_failed_cursor_write_is_reported_as_the_cursor_write() {
+        use crate::observer::db::Db;
+
+        // Proves the two call sites are plumbed separately: the summary write
+        // succeeds here and only `save_cursors` fails.
+        let root = root_with_one_transcript("health-cursor-fail");
+        let db = Db::open(&root.join("cursor-fail.db")).unwrap();
+        db.drop_table_for_test("file_cursors");
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let detail = storage_detail(&store).to_string();
+        assert!(
+            detail.contains("file cursors") && detail.contains("no such table"),
+            "the failing write must be named as the cursor write, with its \
+             error: {detail}"
+        );
+        assert!(
+            !detail.contains("session summaries"),
+            "the summary write succeeded this cycle and must not be reported \
+             as failing: {detail}"
+        );
+        // The summary write really did succeed, so this is the mixed case and
+        // not two failures reported as one.
+        assert_eq!(db.load_summaries().unwrap().sessions.len(), 1);
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn both_writes_failing_reports_both_errors_not_one() {
+        use crate::observer::db::Db;
+
+        // The case a single shared sentence would lose: one error picked,
+        // the other dropped — the `.is_ok()` problem one level up.
+        let root = root_with_one_transcript("health-both-fail");
+        let path = root.join("both-fail.db");
+        drop(Db::open(&path).unwrap());
+        let db = Db::open_read_only(&path).unwrap();
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"));
+        let mut store = Store::default();
+
+        reconcile_and_persist(&mut observer, &mut store, &db);
+
+        let detail = storage_detail(&store).to_string();
+        assert!(
+            detail.contains("session summaries") && detail.contains("file cursors"),
+            "both failed writes must be named: {detail}"
+        );
+
+        drop(db);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_long_or_multiline_sqlite_error_is_bounded_to_one_line() {
+        // The `sanitize_db_error` contract, tested directly. No SQLite error
+        // seen in practice is this shape, which is why a test pins it.
+        let long = "x".repeat(MAX_DB_ERROR_CHARS * 3);
+        let e = rusqlite::Error::InvalidParameterName(format!("line one {long}\nline two"));
+        let rendered = sanitize_db_error(&e);
+
+        assert!(
+            !rendered.contains('\n'),
+            "a multi-line error must not break the single-line health row: {rendered}"
+        );
+        assert!(
+            !rendered.contains("line two"),
+            "only the first line is kept: {rendered}"
+        );
+        assert_eq!(
+            rendered.chars().count(),
+            MAX_DB_ERROR_CHARS,
+            "the rendered error must be capped at MAX_DB_ERROR_CHARS characters"
+        );
     }
 
     #[test]
