@@ -504,3 +504,112 @@ Blast radius: `src-tauri/src/lib.rs` — one `eprintln!` format string and the
              tests and the `if` that gates the log are untouched, so the
              detection logic and when the line is emitted are unchanged. Only
              the words change.
+
+## 2026-10-12 — slice-6, PR #92
+Question:    Issue #50 asks for the real `rusqlite::Error` in the health row
+             "as a sanitized message" and does not say what sanitized means.
+             The text reaches a UI field rebuilt every reconcile cycle and
+             shipped in every snapshot event, so the answer settles both an
+             exposure question and a cost one.
+Chosen:      Two properties, and explicitly not a third. First line only, and
+             capped at 200 characters counted in `chars` — reusing
+             `hook_payload::shorten`, the helper the repo already uses to put
+             a string into a single-line field, widened from private to
+             `pub(crate)` rather than copied. The message text itself is
+             passed through exactly as SQLite produced it.
+             The reasoning for that pass-through, stated so it can be
+             disagreed with: SQLite's diagnostics name schema objects and
+             failure conditions — tables, columns, constraints, "attempt to
+             write a readonly database", "database or disk is full" — and do
+             not echo bound parameter values. The one parameter carrying user
+             content is the serialized `Session` blob in `save_summaries`,
+             which is bound and never interpolated. A `CannotOpen`/`IoErr`
+             message can name the database file path, and this same row
+             already publishes that path verbatim as its `root`, so it is not
+             new exposure.
+             That is an argument from how SQLite reports errors, not a
+             property any test here establishes. It stops holding for a
+             future caller that interpolates user content into SQL instead of
+             binding it, leaving only the cap. Said on `sanitize_db_error`
+             too, so the next person to add a write sees it.
+Rejected:    (a) A hand-mapped table of `ErrorCode` to friendly prose. It
+             discards what the issue asks to keep, and would have to collapse
+             every unmapped code to a generic string — the bug itself.
+             (b) Prefixing the `ErrorCode`'s `Debug` name. `rusqlite` maps
+             plain `SQLITE_ERROR` to `ErrorCode::Unknown`, so the commonest
+             case reads "Unknown: no such table: session_summaries" — a word
+             that says nothing in front of one that says everything. And
+             `Display` already falls back to the code's description ("Error
+             code 8: Attempt to write a readonly database") when SQLite
+             supplies no message, so the kind is covered where no message
+             carries it.
+             (c) Redacting path-like substrings. The database path is the only
+             path that can appear, and the row prints it already.
+Blast radius: `src-tauri/src/commands.rs` (`sanitize_db_error`,
+             `MAX_DB_ERROR_CHARS`) and one visibility keyword in
+             `hook_payload.rs`. Nothing persists — the health row is
+             recomputed every cycle and never written to SQLite.
+
+## 2026-10-12 — slice-6, PR #92
+Question:    Issue #50 wants "a test that forces a real write failure (e.g. a
+             read-only SQLite file, or a closed/invalid connection)". Which,
+             given it must fail deterministically on the Windows CI gate and
+             in a Linux sandbox running as root?
+Chosen:      A `#[cfg(test)]` `Db::open_read_only` using
+             `OpenFlags::SQLITE_OPEN_READ_ONLY`, so writes fail inside SQLite
+             for any user on any platform; plus a `#[cfg(test)]`
+             `drop_table_for_test` for a second, textually different error
+             ("no such table: …") on an ordinary read-write connection. The
+             issue's criterion is two different failures producing two
+             different messages, which needs two real failures. Both sit
+             alongside the four `#[cfg(test)]` `Db` methods already there.
+Rejected:    (a) The issue's own suggestion read literally — chmod the file
+             with `set_permissions`. It fails here two independent ways: the
+             connection's descriptor is already open for writing before the
+             mode changes, and this sandbox runs tests as root, where the mode
+             is not enforced at all. A test that passed on Windows and
+             silently did nothing on Linux is worse than no test.
+             (b) A read-only containing directory, to fail journal creation.
+             Same root problem, and it surfaces as `CannotOpen`/`IoErr`
+             rather than on the write.
+             (c) A mock or a trait over `Db`. The error has to be a real
+             `rusqlite::Error` for the rendering to mean anything.
+Blast radius: `src-tauri/src/observer/db.rs`, two `#[cfg(test)]` methods. No
+             production path reaches either and neither compiles into the
+             shipped binary.
+
+## 2026-10-12 — slice-6, PR #92
+Question:    The queue hands slice-6 slice-3's carry-forward: `migrate` issues
+             no explicit `ROLLBACK` after `execute_batch` fails, so the
+             connection keeps the transaction the generated `BEGIN` opened and
+             the unwind depends on the connection being dropped. "Add one with
+             a test, or record why not."
+Chosen:      Add it, guarded on `conn.is_autocommit()`. The guard is the part
+             worth arguing: it skips the `ROLLBACK` when the failure *was* the
+             `BEGIN`, or when SQLite already unwound the transaction itself,
+             so no statement is issued where there is nothing to roll back.
+             Its result is discarded — `e` is the failure worth returning, and
+             a rollback that cannot run leaves the next `Db::open` to find the
+             hot journal and recover, which is SQLite's own path.
+             The test asserts `is_autocommit()` after a failed migrate, the
+             observable form of the bug, then does what a caller keeping the
+             connection would do: read the version and rows back, and write a
+             new row, all on that same connection. Without the change the
+             first assertion fails. Worth recording that slice-3's
+             `a_failing_second_migration_leaves_an_already_migrated_database_intact`
+             passes with and against this change — exactly slice-3's point,
+             since it drops the connection and could never see this.
+Rejected:    (a) Recording why not. The condition is real for any future
+             caller and the fix is three lines with a failing test available,
+             so "why not" would be a scheduling argument, not a technical one.
+             (b) An unguarded `ROLLBACK`. It returns a spurious error in the
+             two cases above; issuing a statement known to be wrong documents
+             worse than not issuing it.
+             (c) Restructuring `migrate` onto `rusqlite`'s `Transaction`, whose
+             `Drop` rolls back. Tidier, but the `PRAGMA user_version` bump must
+             land in the same transaction as the DDL — the comment above the
+             batch says why — and rewriting that exceeds the carry-forward.
+Blast radius: `src-tauri/src/observer/db.rs`, `migrate`'s loop body. The
+             success path is unchanged: same `format!`, `?` became
+             `if let Err`. Only the error path differs, and only for a caller
+             that keeps the connection, of which production has none.

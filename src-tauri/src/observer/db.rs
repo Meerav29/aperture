@@ -412,6 +412,54 @@ impl Db {
             .expect("insert aged summary");
     }
 
+    /// Test-only constructor: a durable `Db` whose connection SQLite opened
+    /// read-only, so every write returns a real `SQLITE_READONLY` error.
+    ///
+    /// Issue #50 wants a test that forces a *real* write failure, and this
+    /// is the deterministic way to get one. `set_permissions` is not: the
+    /// connection's descriptor is already open for writing before the mode
+    /// changes, and a Unix host running tests as root does not enforce the
+    /// mode at all. A read-only connection fails inside SQLite, identically
+    /// for every user on every platform. Decision 2.
+    ///
+    /// `path` must already be migrated; `migrate` returns early when
+    /// `user_version` is current and could not apply one over this
+    /// connection anyway. `path` stays `Some`, so `is_durable()` is true and
+    /// the health row reports a failed write, not the in-memory fallback.
+    #[cfg(test)]
+    pub(crate) fn open_read_only(path: &Path) -> rusqlite::Result<Self> {
+        let conn = Connection::open_with_flags(
+            path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        migrate(&conn, path, MIGRATIONS)?;
+        Ok(Db {
+            state: Mutex::new(ConnState {
+                conn,
+                summary_cache: HashMap::new(),
+                cursor_cache: HashMap::new(),
+            }),
+            path: Some(path.to_path_buf()),
+            unreadable_summaries: AtomicUsize::new(0),
+        })
+    }
+
+    /// Test-only mutator: drop one of this database's tables, so a write to
+    /// it fails with a second, textually different `rusqlite::Error` than
+    /// `open_read_only` gives. Issue #50's criterion — two different
+    /// failures, two different messages — needs two real failures.
+    #[cfg(test)]
+    pub(crate) fn drop_table_for_test(&self, table: &str) {
+        self.state
+            .lock()
+            .expect("db lock")
+            .conn
+            .execute_batch(&format!("DROP TABLE {table};"))
+            .expect("drop table");
+    }
+
     /// Test-only accessor: the raw `updated_at` column for one cursor row.
     /// See `summary_updated_at`.
     #[cfg(test)]
@@ -431,9 +479,10 @@ impl Db {
 
 /// Apply any migrations in `migrations` beyond `PRAGMA user_version`, each
 /// inside its own transaction. Before the first pending migration, back up
-/// `path` to `<path>.bak` (skipped for `:memory:`). If a migration's
-/// transaction fails it rolls back automatically, so the connection (and
-/// on-disk file) are left at the last successfully applied version.
+/// `path` to `<path>.bak` (skipped for `:memory:`). A migration that fails
+/// is rolled back before the error is returned, so the connection (and
+/// on-disk file) are left at the last successfully applied version with no
+/// transaction still open.
 fn migrate(conn: &Connection, path: &Path, migrations: &[&str]) -> rusqlite::Result<()> {
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     let version = version as usize;
@@ -453,7 +502,27 @@ fn migrate(conn: &Connection, path: &Path, migrations: &[&str]) -> rusqlite::Res
         // but not the version bump; the next launch would then re-run this
         // migration against an already-migrated schema and fail permanently
         // (e.g. "table already exists"), bricking the on-disk database.
-        conn.execute_batch(&format!("BEGIN;\n{sql}\nPRAGMA user_version = {};\nCOMMIT;", i + 1))?;
+        let batch = format!("BEGIN;\n{sql}\nPRAGMA user_version = {};\nCOMMIT;", i + 1);
+        if let Err(e) = conn.execute_batch(&batch) {
+            // `execute_batch` stops at the failing statement, so the `BEGIN`
+            // above is still in effect and the connection is left holding an
+            // open transaction. Slice-3's review carried this forward: the
+            // unwind came only from the connection being dropped, correct for
+            // the sole real caller (`Db::open` drops it on `Err`) and a trap
+            // for any future one, which would go on writing inside a doomed
+            // transaction over a hot journal that stays on disk.
+            //
+            // Guarded on `is_autocommit` so a failure that *was* the `BEGIN`,
+            // or one SQLite already unwound itself, issues no stray
+            // `ROLLBACK`. Its result is dropped deliberately: `e` is the
+            // failure worth reporting, and a rollback that cannot run leaves
+            // the next `Db::open` to find the hot journal and recover, which
+            // is SQLite's own path.
+            if !conn.is_autocommit() {
+                let _ = conn.execute_batch("ROLLBACK;");
+            }
+            return Err(e);
+        }
     }
     Ok(())
 }
@@ -938,8 +1007,10 @@ mod tests {
         let before = summary_rows(&conn);
         let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
         assert!(result.is_err(), "an invalid migration 2 must surface as an error");
-        // Closing the connection rolls back the still-open transaction, which
-        // is what `Db::open` does when `migrate` returns `Err`.
+        // `migrate` now rolls back explicitly before returning, so by this
+        // point the transaction is already unwound; dropping the connection
+        // is just cleanup. See
+        // `a_failed_migration_leaves_no_transaction_open_on_the_connection`.
         drop(conn);
 
         assert_eq!(
@@ -967,6 +1038,62 @@ mod tests {
         assert_eq!(summary_rows(&conn), before);
         drop(conn);
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_migration_leaves_no_transaction_open_on_the_connection() {
+        // Slice-3's review carried this forward: `migrate` issued no explicit
+        // `ROLLBACK` after `execute_batch` failed, so the connection was left
+        // inside the transaction the generated `BEGIN` opened and the unwind
+        // depended entirely on the connection being dropped. Correct for
+        // `Db::open`, which does drop it — and a trap for any later caller
+        // that keeps the connection and carries on.
+        //
+        // `is_autocommit()` is the observable form of the bug: it is false
+        // exactly while a transaction is open on the connection.
+        let dir = migration_scratch_dir("no-open-tx");
+        let path = dir.join("no-open-tx.db");
+        {
+            let db = Db::open(&path).unwrap();
+            db.save_summaries(&[sample_session("claude_code:a")]).unwrap();
+        }
+
+        let conn = Connection::open(&path).unwrap();
+        assert!(
+            conn.is_autocommit(),
+            "setup must hand this test a connection with no transaction open"
+        );
+
+        let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
+        assert!(result.is_err(), "an invalid migration 2 must surface as an error");
+        assert!(
+            conn.is_autocommit(),
+            "a failed migration must roll back before returning, not leave the \
+             transaction open for the connection's drop to unwind"
+        );
+
+        // And the rollback really unwound migration 2's work rather than
+        // merely closing the transaction: the half-applied table is gone, the
+        // version is still 1, and migration 1's row is still readable *on
+        // this same connection*, which is the thing a caller that kept it
+        // would go on to do.
+        assert_eq!(user_version(&conn), 1);
+        assert!(
+            !table_exists(&conn, "session_labels"),
+            "migration 2's half-applied schema survived the rollback"
+        );
+        assert_eq!(summary_rows(&conn).len(), 1);
+
+        // A further write on the same connection succeeds, which it could not
+        // if the connection were still inside a doomed transaction.
+        conn.execute(
+            "INSERT INTO session_summaries (id, data, updated_at) VALUES (?1, ?2, ?3)",
+            params!["claude_code:after", "{}", ChronoUtc::now().to_rfc3339()],
+        )
+        .expect("the connection must still be usable after a failed migration");
+
+        drop(conn);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
