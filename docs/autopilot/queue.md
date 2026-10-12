@@ -293,11 +293,67 @@ the log message only if it falls out of the change, and say so in the PR.
 
 ## slice-6 — Issue #50: `storage_health` discards the real error
 
-Status: in-review
-PR: [#92](https://github.com/Meerav29/aperture/pull/92) — opened against
-`auto/queue` 2026-10-12.
+Status: merged
+PR: [#92](https://github.com/Meerav29/aperture/pull/92) — merged to `auto/queue`
+by the review routine 2026-10-12 as `9c4b448`.
 Issue: [#50](https://github.com/Meerav29/aperture/issues/50)
-Code: `src-tauri/src/observer/` (`storage_health`)
+Code: `src-tauri/src/observer/` (`storage_health`), `src-tauri/src/commands.rs`
+
+All three criteria were verified against the diff rather than against the PR
+body, and all four of the PR's mutation claims were re-run independently in a
+Linux sandbox rather than taken on trust. CI was green on `843bd73` — both jobs,
+`rust` on `windows-latest`. The diff is 582 lines across 5 files, inside the
+600-line review cap, touches no lockfile, and touches nothing outside the slice.
+
+`reconcile_and_persist` now collects a `Vec<WriteFailure>` — one entry per failed
+durable write, carrying the error SQLite returned through `sanitize_db_error`
+(first line, capped at 200 chars via `hook_payload::shorten`) — and
+`storage_health` emits one clause per failure instead of a single fixed sentence.
+The carry-forward landed too: `migrate` issues an explicit `ROLLBACK` guarded on
+`is_autocommit()`, with a test that reads the version and rows back and then
+writes a new row on that same connection.
+
+**The mutations were re-run, not read.** Restoring the old generic sentence —
+precisely the pre-change tree — fails exactly the four tests that assert on error
+text (76 passed, 4 failed). `.take(1)` on the causes fails only
+`both_writes_failing_reports_both_errors_not_one`; `sanitize_db_error` returning
+`e.to_string()` raw fails only
+`a_long_or_multiline_sqlite_error_is_bounded_to_one_line`; deleting the
+`ROLLBACK` guard fails only
+`a_failed_migration_leaves_no_transaction_open_on_the_connection` (79 passed, 1
+failed each). No pre-existing test fails under any of the four, which is the
+claim that matters. `cargo test --locked` (80 passed) and `npm run build` (tsc
+clean, 34 modules) both ran green on the pristine head; `--locked` passing is
+independent confirmation that `Cargo.lock` is unchanged.
+
+The honesty bar is met and worth recording, since this is the slice where it
+would have been easiest to miss. Every failure the tests assert on is induced
+inside SQLite by the test itself (a read-only connection, a dropped table), and
+the PR says so unprompted — no host claim, no runtime-behavior claim, no
+validation status, no dogfood row, and `docs/validation/**`, `docs/roadmap.md`
+and `docs/goals.md` untouched. Using a read-only *connection* rather than the
+issue's suggested read-only *file* is the right call and is recorded as
+Decision 2: `set_permissions` induces nothing when the descriptor is already
+open for writing, and nothing at all when tests run as root.
+
+Two defects carried forward, neither blocking:
+
+- **`hook_payload::shorten` is widened to `pub`, not `pub(crate)`.** Both the PR
+  body and its `decisions.md` entry say `pub(crate)`. Because `hook_payload` is
+  a `pub mod` inside the `pub mod observer`, `pub` exports the helper from the
+  lib crate — wider than documented and wider than needed. A one-word fix for
+  the next slice that touches the file.
+- **The mutation table's pass counts are each inflated by the failure count.**
+  It reports "77 passed, 4 failed" and "80 passed, 1 failed" where a suite of 80
+  actually reports 76/4 and 79/1. Which tests fail, and that every pre-existing
+  test passes, are both exactly as stated — only the arithmetic is off.
+
+Still open from the PR's own "Observed, not changed", none of it this slice's
+job: the long doc comment above `fn plural` describes `storage_health`, so
+rustdoc attaches all of it to that two-line helper; and `"ok"` still means "no
+write failed", not "a write succeeded", so a database that quietly became
+unwritable while the app sat idle is not caught until there is something new to
+persist.
 
 Surface the real `rusqlite::Error` (as a sanitized message) in the health row
 instead of one generic string. A test proves two different failures produce two
