@@ -293,7 +293,9 @@ the log message only if it falls out of the change, and say so in the PR.
 
 ## slice-6 — Issue #50: `storage_health` discards the real error
 
-Status: in-progress
+Status: in-review
+PR: [#92](https://github.com/Meerav29/aperture/pull/92) — opened against
+`auto/queue` 2026-10-12.
 Issue: [#50](https://github.com/Meerav29/aperture/issues/50)
 Code: `src-tauri/src/observer/` (`storage_health`)
 

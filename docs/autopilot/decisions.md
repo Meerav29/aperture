@@ -505,7 +505,7 @@ Blast radius: `src-tauri/src/lib.rs` — one `eprintln!` format string and the
              detection logic and when the line is emitted are unchanged. Only
              the words change.
 
-## 2026-10-12 — slice-6, PR #TBD
+## 2026-10-12 — slice-6, PR #92
 Question:    Issue #50 asks for the real `rusqlite::Error` in the health row
              "as a sanitized message" and does not say what sanitized means.
              The text reaches a UI field rebuilt every reconcile cycle and
@@ -550,7 +550,7 @@ Blast radius: `src-tauri/src/commands.rs` (`sanitize_db_error`,
              `hook_payload.rs`. Nothing persists — the health row is
              recomputed every cycle and never written to SQLite.
 
-## 2026-10-12 — slice-6, PR #TBD
+## 2026-10-12 — slice-6, PR #92
 Question:    Issue #50 wants "a test that forces a real write failure (e.g. a
              read-only SQLite file, or a closed/invalid connection)". Which,
              given it must fail deterministically on the Windows CI gate and
@@ -578,7 +578,7 @@ Blast radius: `src-tauri/src/observer/db.rs`, two `#[cfg(test)]` methods. No
              production path reaches either and neither compiles into the
              shipped binary.
 
-## 2026-10-12 — slice-6, PR #TBD
+## 2026-10-12 — slice-6, PR #92
 Question:    The queue hands slice-6 slice-3's carry-forward: `migrate` issues
              no explicit `ROLLBACK` after `execute_batch` fails, so the
              connection keeps the transaction the generated `BEGIN` opened and
