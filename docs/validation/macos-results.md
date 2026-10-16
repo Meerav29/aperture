@@ -47,7 +47,7 @@ session, and `title` was null (consistent with open issue #42).
 | Provider | Host | Result |
 |---|---|---|
 | Claude Code | Terminal.app | Blocked: CLI not installed |
-| Claude Code | VS Code | Pending |
+| Claude Code | VS Code | **Partial**: discovery and final status confirmed; live transitions, attention, navigation, interrupt and restart pending |
 | Claude Code | Desktop Code | Pending |
 | Codex | Terminal.app | Blocked: CLI not installed |
 | Codex | VS Code | Pending |
@@ -55,6 +55,27 @@ session, and `title` was null (consistent with open issue #42).
 
 Each row gets its own record below, using the checklist template, once it has
 been run.
+
+### Claude Code · VS Code (run 1, partial)
+
+Date/time/timezone: 2026-10-09, about 15:08–15:10 EDT. Dashboard screenshot taken 2026-10-15
+Commit: `614ee19` (app run with `npm run tauri dev`)
+macOS version / architecture: macOS 27.0 (26A428), arm64
+Provider / CLI version / app or extension version: Claude Code VS Code extension; the transcript records version 2.1.295 (updated from the 2.1.289 seen at preflight)
+Host / local execution: VS Code, local, disposable folder `~/aperture-mac-test/claude-vscode`
+Passive or hooks enabled: Passive only
+Effective root (redacted): `~/.claude/projects`
+Disposable session ID (redacted consistently if needed): `6de0ec7f…`
+Steps: The tester started a new Claude Code chat in the disposable folder in VS Code and sent two small prompts, each of which ran one Bash tool call (it created `hello.txt`, then `check.txt`).
+Discovery result: **Observed.** The card showed provider Claude Code, folder `~/aperture-mac-test/claude-vscode`, host `vs code`, and native ID prefix `6de0ec7f`. Last activity was 2026-10-09 15:09:46, which matches the transcript's final event (19:09:46Z). The transcript's `entrypoint` is `claude-vscode`.
+Prompt/tool/finish result: Final state `idle` / "Turn complete" was observed. The transcript shows two turns: user prompt → Bash `tool_use` → successful `tool_result` → `end_turn`. **Pending:** whether the card was seen passing through working → tool → complete while the session ran, and how long each took.
+Permission/input request and resolution result: **Not exercised.** Both Bash results arrived within about 0.5 s of the tool call, so no permission prompt was shown. Attention displayed "unknown (no confirmed attention signal)", which is correct for passive mode. Still to run: one permission request and one explicit question, each answered in VS Code.
+Interruption/session-close result: Pending.
+Restart/sleep-wake result: Pending. When viewed on 2026-10-15 (whether Aperture ran continuously since 2026-10-09 was not recorded), the session was listed with observation `stale · process liveness unknown` and was not shown as live. A deliberate restart during agent work, and a sleep/wake, are still pending.
+Navigation action and actual result: Pending (Open folder / Reveal transcript not yet recorded).
+Build/test outputs: See preflight section 1.
+Evidence references (sanitized screenshot or trace): A dashboard screenshot from 2026-10-15 is held by the tester (not committed because it contains an unredacted home path). Transcript metadata was summarized locally by record type and tool name only; no prompt text was copied.
+Known failures / pending checks: The storage-health row is labeled "Claude Code ok" rather than as storage, which reproduces open issue #28 on macOS. The session has an `ai-title` record, but the card shows the folder name instead (consistent with #42/#47). Live transitions, permission, question, interrupt, restart-during-work and navigation checks remain pending.
 
 <!--
 Template (copy per row):
