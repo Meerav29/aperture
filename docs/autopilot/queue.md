@@ -1,7 +1,7 @@
 # Autopilot queue — aperture
 
 Design: `grid-prophet/docs/superpowers/specs/2026-09-19-autopilot-design.md`
-Rotation: Mon / Wed / Fri. Base branch: `auto/queue`. Window: 2026-09-20 → 09-25.
+Rotation (window 2): Wed Oct 21 → Sun Oct 25, daily. Base branch: `auto/queue`. Window 2: 2026-10-20 → 10-26, tracking issue #101. (Window 1: 2026-09-20 → 10-19, issue #25, slices 1-6, all merged.)
 
 ## Read this before picking up a slice
 
@@ -9,7 +9,9 @@ Read [AGENTS.md](../../AGENTS.md), [docs/roadmap.md](../roadmap.md), and
 [docs/product-vision.md](../product-vision.md) first. They override this file on
 approach, on sequencing, and on what may be claimed.
 
-We are inside **Phase A — Dogfood gate (Sep 16 → Oct 9)**. Phase A's gate is
+**Window 2 note (2026-10-20):** the roadmap calendar puts us in Phase B (Oct 12 → Nov 6), but the Phase A gate has **not been recorded** (#87), and Meerav is keeping that decision. So window 2 stays on gate-neutral fixes: correctness bugs and test coverage that Phase A's stability work and every later phase need anyway. **Nothing in window 2 touches #9 or #7.** The text below describes window 1's Phase A framing and still governs what autopilot may claim.
+
+Window 1 was inside **Phase A — Dogfood gate (Sep 16 → Oct 9)**. Phase A's gate is
 five consecutive clean workdays in the dogfood log plus six evidenced Windows
 rows. **Autopilot cannot advance that gate and does not try.** Items 2 through 5
 of Phase A — hook enrichment on the owner's machine, live-host evidence, the
@@ -363,10 +365,98 @@ record in `decisions.md` why not.
 
 ---
 
+# Window 2: 2026-10-20 → 10-26
+
+Slices come from the candidates in #100, filtered by the binding constraints
+above. #76 (CI fmt/clippy) was a candidate but is **excluded**: it edits
+`.github/workflows/`, which autopilot may not touch. #89 replaces it.
+
+## slice-7: Issue #99: `aperture-hook collect` wall-clock timeout
+
+Status: todo
+Issue: [#99](https://github.com/Meerav29/aperture/issues/99)
+
+Acceptance (from the issue; do not weaken):
+
+- [ ] The helper exits 0, with no stdout or stderr, within the budget when stdin never closes.
+- [ ] A test covers the hanging-stdin case.
+- [ ] The budget is stated in `docs/specification.md`. **Not** in
+      `docs/validation/**`: that half of the issue's third criterion is the
+      owner's. Say so in the PR. Choosing the budget "from data" needs real
+      hook latency measurements. Pick a provisional value, record it in
+      decisions.md as provisional, and leave the measurement to the owner.
+- [ ] No real provider session is launched to test it.
+
+## slice-8: Issue #95: oversized pasted-screenshot records mark Claude Code "degraded"
+
+Status: todo
+Issue: [#95](https://github.com/Meerav29/aperture/issues/95)
+
+Acceptance (from the issue):
+
+- [ ] A valid record larger than `MAX_LINE` doesn't change the provider's health to `degraded`.
+- [ ] The oversized skip stays visible in the health detail. It isn't silently hidden.
+- [ ] A test covers a >1 MiB image-bearing user record. Synthesize it in the
+      test; don't commit a real transcript.
+- [ ] (Optional, per the issue) The turn-start event from such a record is still applied.
+
+## slice-9: Issues #51, #52, #53: reducer correctness
+
+Status: todo
+Issues: [#51](https://github.com/Meerav29/aperture/issues/51), [#52](https://github.com/Meerav29/aperture/issues/52), [#53](https://github.com/Meerav29/aperture/issues/53)
+
+One slice because all three are small, live in `hook_bridge.rs` / `passive.rs`,
+and each comes with one regression test. If the diff goes over 600 lines, ship
+#52 and #53 and leave #51 `todo` as slice-9b.
+
+Acceptance (one per issue):
+
+- [ ] #51: after two concurrent permission/question requests for different
+      tools, resolving the most recent one first leaves `blocked_on` naming a
+      tool that is still pending.
+- [ ] #52: an assistant message whose `content` has a non-question `tool_use`
+      block before an `AskUserQuestion` block still yields `Blocked` / `"explicit_input"`.
+- [ ] #53: replaying an earlier-timestamped line after a truncation reset
+      doesn't change `cwd` (or `host`) once a later value has been observed.
+
+## slice-10: Issue #45: IntegrationHealth test coverage
+
+Status: todo
+Issue: [#45](https://github.com/Meerav29/aperture/issues/45)
+
+Test-only, unless a test exposes a bug. In that case, fix it in the same PR and
+record it in decisions.md.
+
+Acceptance (from the issue):
+
+- [ ] A missing or inaccessible provider root yields `state == "degraded"` with
+      a non-empty `detail`, while the other provider simultaneously reports `"watching"`.
+- [ ] A provider root with zero session files yields `"no_sessions"`, not `"degraded"`.
+- [ ] Malformed or oversized records surface their count in `detail` rather than
+      being silently dropped. (Coordinate with slice-8, which changes the
+      oversized path. Test the behavior as it stands after slice-8 merged.)
+
+## slice-11: Issue #89: bundle the IBM Plex fonts locally
+
+Status: todo
+Issue: [#89](https://github.com/Meerav29/aperture/issues/89)
+
+Acceptance (from the issue):
+
+- [ ] Fonts ship as local woff2 assets referenced through `@font-face`. No
+      `fonts.googleapis.com` / `gstatic` reference remains (grep evidence in the PR).
+- [ ] The OFL license is included in the repo.
+- [ ] `npm run build` passes, and the built `dist/` contains the font files.
+- [ ] "Renders identically with the network disabled" is a runtime check.
+      **Don't claim it.** Put it in the review pack for the owner.
+- [ ] Doesn't enable or edit the CSP (#60). That's a separate decision.
+
 ## Explicitly not in this queue
 
 - **#7** (Git repository/worktree identity) and **#9** (SessionKey contract) are
-  Phase B, starting Oct 12, and #18 argues they should follow slice 1 anyway.
+  Phase B. #9 rewrites the IPC contract and needs the owner's sign-off (#100).
+- **#87** (record the Phase A gate) is the owner's decision.
+- **#76** edits `.github/workflows/`, which autopilot may not touch.
 - **#11** (tray, notifications, filters, accessibility) is Phase C — December.
 - **#5**, **#4**, **#6**, **#13** need real-host or real-fixture evidence.
 - **#22** is in flight on another branch.
