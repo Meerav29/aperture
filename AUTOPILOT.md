@@ -1,67 +1,50 @@
-# Autopilot ran while you were away
+# Autopilot: window 2, Oct 20-26, 2026
 
-**Window: 2026-09-20 → 2026-09-25. Read this before you touch anything else.**
+**Read this before you touch anything else.** Scheduled cloud routines are building slices 7-11 from [docs/autopilot/queue.md](docs/autopilot/queue.md) while Meerav is travelling. They open PRs against `auto/queue`, and a separate review routine merges the ones that pass CI and review. **`main` does not move.**
 
-While you were away, scheduled cloud routines built slices from
-[docs/autopilot/queue.md](docs/autopilot/queue.md), opened PRs, and merged the
-ones that passed CI and review.
+## What's queued (one a day, about 9am ET; review about 2pm ET)
 
-**None of it is on `main`.** Everything landed on the `auto/queue` branch.
-`main` has only the setup commit that added this file, CI, and the queue.
+| Day | Slice |
+|---|---|
+| Wed Oct 21 | 7: #99 hook `collect` wall-clock timeout |
+| Thu Oct 22 | 8: #95 oversized screenshot records no longer mark Claude Code degraded |
+| Fri Oct 23 | 9: #51 / #52 / #53 reducer correctness |
+| Sat Oct 24 | 10: #45 IntegrationHealth test coverage |
+| Sun Oct 25 | 11: #89 bundle IBM Plex locally |
 
-## Review this in order
-
-1. **[docs/autopilot/decisions.md](docs/autopilot/decisions.md)** — every design
-   call a routine made on your behalf because the spec did not settle it, with
-   the alternative it rejected. Read it first.
-2. **The `auto/queue` → `main` pull request.** One diff, all merged slices.
-3. **The tracking issue** `Autopilot run log — 2026-09-20 to 09-25` — daily
-   digests, halts, and anything blocked or vetoed.
-4. **Any still-open PR** against `auto/queue` — rejected or held, never merged.
+Log: issue [#101](https://github.com/Meerav29/aperture/issues/101).
 
 ## What autopilot was not allowed to touch
 
-Most of aperture's open work needs evidence from real installed hosts, which a
-cloud routine cannot produce. So the routines were restricted to code with unit
-test gates, and were **forbidden from writing to `docs/validation/**` or
-asserting host compatibility, runtime behavior, or validation status**.
+Same rules as window 1. They're binding, and the review routine rejects any PR that breaks them:
 
-That means:
+- **No writes to `docs/validation/**`, `docs/roadmap.md` or `docs/goals.md`.**
+- **No claims about host compatibility, runtime behavior, or validation status.** A green CI run is evidence about code, not about a host.
+- **The Phase A gate is exactly where you left it.** #87 (record passed, missed or moved) is yours, and you chose to keep it. Window 2 is gate-neutral fixes only.
+- **No #9 or #7.** The Phase B contract and Git identity work need your sign-off (#100).
+- **No `.github/workflows/` edits**, which is why #76 (fmt/clippy in CI) isn't queued.
 
-- **The Phase A dogfood gate is exactly where you left it.** Five clean workdays
-  and six evidenced Windows rows are yours to earn;
-  [docs/roadmap.md](docs/roadmap.md) is untouched and no gate was marked passed.
-- Autopilot took only **Phase A item 1**, the correctness leftovers (#18, #17),
-  plus migration test coverage (#20). Everything else in Phase A needs you at a
-  real machine.
-- **Nothing here is macOS evidence.** The friend handoff is untouched.
-- A green CI run in these PRs is evidence about code, not about a host.
-- `docs/goals.md` was not edited — it is stale per #22, which is in flight on
-  the `claude/github-quick-wins-1m20eg` branch.
-- The CI workflow added at setup **half-addresses #24**. Frontend test tooling
-  is still missing, so don't close that issue on the workflow alone.
+## Review in this order when you're back
 
-If you find a merged slice that claims otherwise, that is a bug in the
-automation and worth telling me about — `AGENTS.md` forbids it explicitly and
-the review routine was supposed to reject it.
+1. [docs/autopilot/decisions.md](docs/autopilot/decisions.md), entries from 2026-10-20 on. #99's timeout budget is a *provisional* pick there, waiting for your real hook-latency numbers.
+2. Issue #101: digests, halts, rejections.
+3. Any PR still open against `auto/queue`.
+4. The `auto/queue` → `main` diff. Slice-11's review pack includes "run with the network off". Only you can check that.
 
 ## The thing to be skeptical about
 
-The cloud sandbox likely could not run `cargo test` locally (Tauri needs system
-libraries it may not have), so aperture slices got **less pre-flight checking
-than grid-prophet's**. GitHub Actions on `windows-latest` was the real gate.
-Each PR body states which checks ran locally and which did not.
+The cloud sandbox may not be able to run `cargo test` (window 1 hit a permission block once). GitHub Actions on `windows-latest` is the real gate, and each PR body says which checks ran where.
+
+## If you're asking a cloud session to do something here
+
+- Read [AGENTS.md](AGENTS.md). It overrides everything else on what may be claimed.
+- To continue autopilot work, branch from `auto/queue`. If a slice's PR is open, comment on it, or comment `HOLD` first if you mean to take it over.
+- Linux deps for `cargo test`: `apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev libjavascriptcoregtk-4.1-dev`.
 
 ## Stopping it
 
-Routines are disabled from Claude Code (`RemoteTrigger` update,
-`enabled: false`). Permanent deletion is the web UI at
-<https://claude.ai/code/routines>.
+Comment `HOLD` on a PR to stop that slice. Routines: `RemoteTrigger` update with `enabled: false` (IDs are in Meerav's Claude memory), or <https://claude.ai/code/routines>.
 
-## How it was set up
+---
 
-The design lives in the grid-prophet repo:
-`grid-prophet/docs/superpowers/specs/2026-09-19-autopilot-design.md`. It covers
-the branch model, the review contract, the prohibitions, and the reasoning
-behind each. The same design governs grid-prophet, which ran on alternating
-days.
+Window 1 (Sep 20 → Oct 19) built slices 1-6 (#18, #17, #20, #30, #43, #50), all merged and on `main` via #83 and later merges. Its log is issue #25. Design and review contract: `grid-prophet/docs/superpowers/specs/2026-09-19-autopilot-design.md`.
