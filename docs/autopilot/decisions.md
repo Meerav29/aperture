@@ -613,3 +613,64 @@ Blast radius: `src-tauri/src/observer/db.rs`, `migrate`'s loop body. The
              success path is unchanged: same `format!`, `?` became
              `if let Err`. Only the error path differs, and only for a caller
              that keeps the connection, of which production has none.
+
+## 2026-10-21 — slice-7, PR #PRNUM
+Question:    Issue #99 wants `aperture-hook collect` to give up after a
+             wall-clock budget, "e.g. 1-2 s", chosen "from data". There is no
+             data: helper latency per provider has not been measured (that is
+             Phase A item 2, the owner's). What value ships meanwhile?
+Chosen:      750 ms, **provisional**, as `hook_bridge::COLLECT_BUDGET`, stated
+             in `docs/specification.md`. The deciding fact is in the code, not
+             a measurement: the snippet `config` prints already asks each
+             provider for `"timeout": 1` on every hook. A budget at or above
+             that never fires before the provider's own limit (if the provider
+             honours it), so it would protect nothing the snippet does not.
+             750 ms leaves a quarter-second of the provider's second for the
+             helper's own process start and exit. The owner should replace it
+             once real `collect` latencies are recorded; if p99 turns out close
+             to 750 ms, the right move is raising both numbers together.
+Rejected:    (a) The issue's 1-2 s. Both are at or above the printed hook
+             timeout, so the watchdog would be dead code under the configuration
+             Aperture itself recommends.
+             (b) Something much tighter, like 250 ms. The normal path does a
+             directory listing of up to 4,096 entries, a file create and a
+             rename; on a cold disk or under AV scanning that can legitimately
+             take a few hundred ms, and every early exit is a lost event.
+             Losing events to guess-tuning is worse than a slightly late exit.
+Blast radius: One constant in `src-tauri/src/observer/hook_bridge.rs` and one
+             sentence in `docs/specification.md`. Changing the value is a
+             one-line edit; the test reads the constant, so it follows.
+
+## 2026-10-21 — slice-7, PR #PRNUM
+Question:    How does the helper enforce the budget, and how can a test prove
+             "exits within the budget" from outside the process?
+Chosen:      A watchdog thread started first thing in the `collect` arm of the
+             binary's `main`, which sleeps for the budget and calls
+             `process::exit(0)`. On the normal path `main` returns first and
+             the process ends with the thread still asleep. The test spawns the
+             real helper with `CARGO_BIN_EXE_aperture-hook`, writes half a
+             payload and keeps stdin open, then polls `try_wait`. It asserts
+             exit status 0, empty stdout and stderr, no published event, and an
+             elapsed time of at least the budget (it waited on stdin rather than
+             failing early). The upper bound is the budget plus 2 s of
+             `SPAWN_SLACK`: the helper measures its budget from its own start,
+             and an outside observer cannot separate that from process creation
+             on a loaded Windows runner. The slack is a test tolerance, not a
+             change to the budget, and is named and commented as such.
+Rejected:    (a) Making `collect` itself time-aware (reading stdin on a
+             separate thread with a channel timeout). It covers the read but not
+             a hung `create_dir_all`, `read_dir` or `rename`, which the issue
+             also names; only a process-level exit covers every step.
+             (b) Putting the watchdog in the library. `process::exit` from
+             library code would end the Tauri app or a test runner, so it
+             belongs in the helper binary alone.
+             (c) Asserting `elapsed < budget` with no slack. Process start on
+             `windows-latest` is not bounded, so the test would flake on the
+             one gate that counts, and a flaky test is quickly ignored.
+Blast radius: `src-tauri/src/bin/aperture-hook.rs` (`collect` arm, six lines)
+             and one new test in `src-tauri/tests/hook_bridge_cli.rs`.
+             `process::exit` runs no destructors, so a timeout during the inbox
+             write can leave an `aperture-v1-*.tmp` file. `poll` only reads
+             `.json` names, so it is never applied, but it is never cleaned up
+             either and counts toward the 4,096-entry soft cap. Recorded under
+             "Observed, not changed" in the PR, not fixed here.

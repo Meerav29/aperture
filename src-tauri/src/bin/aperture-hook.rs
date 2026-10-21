@@ -19,6 +19,12 @@ fn main() {
             }
         }
         (Some("collect"), Some(provider)) => {
+            // Nothing below has a deadline of its own: stdin may never close and
+            // the inbox write may hang. Leave silently once the budget is spent.
+            std::thread::spawn(|| {
+                std::thread::sleep(hook_bridge::COLLECT_BUDGET);
+                std::process::exit(0);
+            });
             if let Some(root) = hook_bridge::inbox() {
                 let _ = hook_bridge::collect(provider, std::io::stdin().lock(), &root);
             }

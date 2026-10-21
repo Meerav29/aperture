@@ -11,9 +11,16 @@ use serde_json::{json, Value};
 use std::{
     io::{self, Read},
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 const MAX_INPUT: u64 = 1024 * 1024;
+/// Wall-clock budget for one `aperture-hook collect` run, after which the helper
+/// exits 0 silently and the event is dropped. Hooks run synchronously, so a
+/// stalled stdin or inbox write would otherwise stall the agent's turn.
+/// Provisional (docs/autopilot/decisions.md): kept under the one-second hook
+/// `timeout` that `config` prints, until real helper latency is measured.
+pub const COLLECT_BUDGET: Duration = Duration::from_millis(750);
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Event {
     version: u8,
