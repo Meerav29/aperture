@@ -85,6 +85,11 @@ Keep extension points small; a general plugin SDK is outside this release.
 For the Windows follow-up, add a small Rust helper that reads hook JSON,
 retains only observation metadata, writes to an Aperture-owned local inbox,
 emits no decision output, and exits successfully on collection failure.
+Its `collect` command has a wall-clock budget of 750 ms (`COLLECT_BUDGET`,
+provisional until helper latency is measured): if stdin has not closed or the
+inbox write has not finished by then, it exits 0 with no output and that event is
+dropped. The budget sits under the `"timeout": 1` its printed configuration
+requests.
 Configuration is printed for explicit manual merging; it must not replace
 existing provider settings. A future packaged installer must satisfy the
 configuration-safety contract below before it becomes an enabled feature.
