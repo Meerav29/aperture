@@ -614,7 +614,7 @@ Blast radius: `src-tauri/src/observer/db.rs`, `migrate`'s loop body. The
              `if let Err`. Only the error path differs, and only for a caller
              that keeps the connection, of which production has none.
 
-## 2026-10-21 — slice-7, PR #PRNUM
+## 2026-10-21 — slice-7, PR #105
 Question:    Issue #99 wants `aperture-hook collect` to give up after a
              wall-clock budget, "e.g. 1-2 s", chosen "from data". There is no
              data: helper latency per provider has not been measured (that is
@@ -641,7 +641,7 @@ Blast radius: One constant in `src-tauri/src/observer/hook_bridge.rs` and one
              sentence in `docs/specification.md`. Changing the value is a
              one-line edit; the test reads the constant, so it follows.
 
-## 2026-10-21 — slice-7, PR #PRNUM
+## 2026-10-21 — slice-7, PR #105
 Question:    How does the helper enforce the budget, and how can a test prove
              "exits within the budget" from outside the process?
 Chosen:      A watchdog thread started first thing in the `collect` arm of the
