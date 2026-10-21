@@ -373,8 +373,24 @@ above. #76 (CI fmt/clippy) was a candidate but is **excluded**: it edits
 
 ## slice-7: Issue #99: `aperture-hook collect` wall-clock timeout
 
-Status: in-review
-PR: [#105](https://github.com/Meerav29/aperture/pull/105)
+Status: merged
+PR: [#105](https://github.com/Meerav29/aperture/pull/105) — merged to `auto/queue`
+by the review routine 2026-10-21 as `df1edd1`.
+
+All four criteria were verified against the diff. CI (`web`, and `rust` on
+`windows-latest`) was green on `ceb8671`. The review re-ran
+`cargo test --locked` in a Linux sandbox (lib 80, `durable_recovery` 1,
+`hook_bridge_cli` 2, all passed) and reproduced the PR's mutation: with
+`aperture-hook.rs` reverted to `auto/queue`, the new test fails with
+`helper still running 2.75s after spawn with stdin open (budget 750ms)`. That
+is evidence about code, not about a host: the 750 ms is provisional, nothing
+measured real helper latency, and the `docs/validation/**` half of #99's third
+criterion is still the owner's.
+
+Carried forward, not blocking: `process::exit` skips destructors, so a timeout
+mid-write can leave an `aperture-v1-*.tmp` in the spool that `poll` never
+cleans up and that counts toward the 4,096-entry cap (PR "Observed, not
+changed"; no issue filed yet).
 Issue: [#99](https://github.com/Meerav29/aperture/issues/99)
 
 Acceptance (from the issue; do not weaken):
