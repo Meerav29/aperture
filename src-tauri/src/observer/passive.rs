@@ -19,6 +19,11 @@ struct Cursor {
     offset: u64,
     initial_len: u64,
     malformed: usize,
+    /// Complete lines over `MAX_LINE`, skipped unparsed. Kept apart from
+    /// `malformed` because a valid record can be this large (a user prompt
+    /// with pasted screenshots inlined as base64, #95), so it is not
+    /// evidence of a broken transcript.
+    oversized: usize,
     id: Option<String>,
     host: Option<Host>,
     created: Option<std::time::SystemTime>,
@@ -61,11 +66,15 @@ impl Observer {
             discover(root, &mut files, &mut errors, 0);
             files.sort();
             let mut malformed = 0;
+            let mut oversized = 0;
             for path in &files {
                 let initial = !self.cursors.contains_key(path);
                 let cursor = self.cursors.entry(path.clone()).or_default();
                 match read_file(path, provider, cursor, store, initial) {
-                    Ok(_) => malformed += cursor.malformed,
+                    Ok(_) => {
+                        malformed += cursor.malformed;
+                        oversized += cursor.oversized;
+                    }
                     Err(_) => errors += 1,
                 }
             }
@@ -80,15 +89,8 @@ impl Observer {
                 root: root.to_string_lossy().into_owned(),
                 files: files.len(),
                 last_event_at: last,
-                state: if errors > 0 || malformed > 0 {
-                    "degraded"
-                } else if files.is_empty() {
-                    "no_sessions"
-                } else {
-                    "watching"
-                }
-                .into(),
-                detail: format!("{errors} file read errors; {malformed} skipped records."),
+                state: passive_state(errors, malformed, files.len()).into(),
+                detail: passive_detail(errors, malformed, oversized),
             });
         }
         store.integrations = health;
@@ -125,6 +127,7 @@ impl Observer {
                     offset: r.offset,
                     initial_len: r.initial_len,
                     malformed: r.malformed as usize,
+                    oversized: r.oversized as usize,
                     id: r.session_id,
                     host: r.host.as_deref().map(host_from_str),
                     created: r
@@ -145,6 +148,7 @@ impl Observer {
                 offset: c.offset,
                 initial_len: c.initial_len,
                 malformed: c.malformed as u64,
+                oversized: c.oversized as u64,
                 session_id: c.id.clone(),
                 host: c.host.map(host_to_str),
                 created_ns: c
@@ -161,6 +165,31 @@ impl Observer {
             .find(|(_, root)| path.starts_with(root))
             .map(|(p, _)| p.clone())
     }
+}
+
+/// Oversized records are deliberately absent: only read errors and
+/// unparseable records mean the transcript could not be read as written.
+fn passive_state(errors: usize, malformed: usize, files: usize) -> &'static str {
+    if errors > 0 || malformed > 0 {
+        "degraded"
+    } else if files == 0 {
+        "no_sessions"
+    } else {
+        "watching"
+    }
+}
+
+/// Oversized skips stay in the detail even though they no longer degrade the
+/// row: the record's event was still not applied, and that loss is reported.
+fn passive_detail(errors: usize, malformed: usize, oversized: usize) -> String {
+    let mut detail = format!("{errors} file read errors; {malformed} skipped records.");
+    if oversized > 0 {
+        let records = if oversized == 1 { "record" } else { "records" };
+        detail += &format!(
+            " {oversized} oversized {records} over 1 MiB skipped unread (likely inline attachments such as pasted images); their events were not applied."
+        );
+    }
+    detail
 }
 
 fn discover(root: &Path, out: &mut Vec<PathBuf>, errors: &mut usize, depth: usize) {
@@ -212,6 +241,7 @@ fn read_file(
         cursor.host = None;
         cursor.initial_len = meta.len();
         cursor.malformed = 0;
+        cursor.oversized = 0;
     }
     if initial {
         cursor.initial_len = meta.len();
@@ -220,6 +250,7 @@ fn read_file(
     file.seek(SeekFrom::Start(cursor.offset))?;
     let mut reader = BufReader::new(file);
     let mut malformed = 0;
+    let mut oversized = 0;
     // Bounded per poll, with incomplete records left for the next poll.
     let mut consumed = 0;
     while consumed < 8 * 1024 * 1024 {
@@ -252,7 +283,7 @@ fn read_file(
         cursor.offset += total;
         consumed += total;
         if total > MAX_LINE as u64 {
-            malformed += 1;
+            oversized += 1;
             continue;
         }
         match serde_json::from_slice::<Value>(&bytes) {
@@ -271,6 +302,7 @@ fn read_file(
         }
     }
     cursor.malformed += malformed;
+    cursor.oversized += oversized;
     Ok(malformed)
 }
 
@@ -789,6 +821,98 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         std::fs::remove_dir(&root).unwrap();
+    }
+
+    /// A Claude Code `user` record shaped like the one in #95: three pasted
+    /// screenshots inlined as base64 `image` blocks, then the prompt text.
+    /// Synthesized, not copied from a real transcript, and well over 1 MiB.
+    fn screenshot_record(session: &str) -> String {
+        let image = |n: usize| json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"A".repeat(n)}});
+        let line = json!({"type":"user","sessionId":session,"timestamp":Utc::now().to_rfc3339(),"message":{"role":"user","content":[image(500_000), image(500_000), image(476_000), {"type":"text","text":"redacted"}]}}).to_string();
+        assert!(line.len() > MAX_LINE, "fixture must exceed MAX_LINE");
+        serde_json::from_str::<Value>(&line).expect("fixture must be valid JSON");
+        line
+    }
+
+    #[test]
+    fn an_oversized_screenshot_record_is_not_counted_as_malformed() {
+        let root = std::env::temp_dir().join(format!("aperture-oversized-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("shots.jsonl");
+        let after = json!({"type":"assistant","sessionId":"shots","timestamp":Utc::now().to_rfc3339(),"message":{"content":[{"type":"tool_use","name":"Read"}]}}).to_string();
+        std::fs::write(&path, format!("{}\n{after}\n", screenshot_record("shots"))).unwrap();
+
+        let mut cursor = Cursor::default();
+        let mut store = Store::default();
+        let malformed = read_file(&path, "claude_code", &mut cursor, &mut store, true).unwrap();
+        assert_eq!((malformed, cursor.malformed, cursor.oversized), (0, 0, 1));
+        // The oversized line is skipped whole and the next record still lands.
+        assert_eq!(cursor.offset, std::fs::metadata(&path).unwrap().len());
+        assert_eq!(
+            store.sessions["claude_code:shots"].activity.as_deref(),
+            Some("Tool: Read")
+        );
+
+        // An unparseable line still counts as malformed, beside the oversized one.
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, b"not json\n").unwrap();
+        drop(file);
+        read_file(&path, "claude_code", &mut cursor, &mut store, false).unwrap();
+        assert_eq!((cursor.malformed, cursor.oversized), (1, 1));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn oversized_records_alone_do_not_degrade_but_stay_in_the_detail() {
+        assert_eq!(passive_state(0, 0, 1), "watching");
+        assert_eq!(passive_state(0, 1, 1), "degraded");
+        assert_eq!(passive_state(1, 0, 1), "degraded");
+        assert_eq!(passive_state(0, 0, 0), "no_sessions");
+        assert_eq!(
+            passive_detail(0, 0, 0),
+            "0 file read errors; 0 skipped records."
+        );
+        assert!(passive_detail(0, 0, 2).contains("2 oversized records over 1 MiB skipped"));
+        assert!(passive_detail(0, 0, 1).contains("1 oversized record over 1 MiB skipped"));
+
+        // Through `poll` and a cursor round trip: the oversized count reaches
+        // the health detail, separately from skipped records, and survives a
+        // restart. `state` is not asserted here because `poll` also folds in
+        // this machine's real hook inbox; `passive_state` above covers it.
+        let root =
+            std::env::temp_dir().join(format!("aperture-oversized-poll-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("s.jsonl"),
+            format!("{}\n", screenshot_record("s")),
+        )
+        .unwrap();
+        let detail = |observer: &mut Observer| {
+            let mut store = Store::default();
+            observer.poll(&mut store);
+            store.integrations[0].detail.clone()
+        };
+        let mut first = Observer::new(root.clone(), root.join("codex-unused"));
+        let before = detail(&mut first);
+        assert!(
+            before.contains("0 skipped records. 1 oversized record"),
+            "{before}"
+        );
+        let mut second = Observer::new(root.clone(), root.join("codex-unused"));
+        second.restore_cursors(first.export_cursors());
+        let restored = detail(&mut second);
+        assert!(
+            restored.contains("0 skipped records. 1 oversized record"),
+            "{restored}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

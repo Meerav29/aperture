@@ -674,3 +674,54 @@ Blast radius: `src-tauri/src/bin/aperture-hook.rs` (`collect` arm, six lines)
              `.json` names, so it is never applied, but it is never cleaned up
              either and counts toward the 4,096-entry soft cap. Recorded under
              "Observed, not changed" in the PR, not fixed here.
+
+## 2026-10-22 — slice-8, PR #106
+Question:    Issue #95 wants oversized lines counted apart from unparseable
+             ones and kept visible in the health detail. Where does the new
+             count live? The existing `malformed` count persists with the file
+             cursor in SQLite.
+Chosen:      A separate `Cursor::oversized`, persisted through migration
+             `0002_cursor_oversized.sql`
+             (`ALTER TABLE file_cursors ADD COLUMN oversized INTEGER NOT NULL
+             DEFAULT 0`) and carried by `CursorRecord`, `save_cursors` and
+             `load_cursors`. The slice-3 migration tests now build "the next
+             migration" with `with_next(...)` and compare against `CURRENT`
+             instead of hard-coding version 1. Their assertions are otherwise
+             unchanged.
+Rejected:    (a) An in-memory-only count. After a restart the cursor resumes
+             past the oversized line, so the skip would vanish from the detail,
+             which is the "silently hidden" the issue forbids.
+             (b) Encoding both counts in the one `malformed` column. A hidden
+             format inside an integer is a worse migration cost than a column.
+Blast radius: `passive.rs` (`Cursor`, `poll`, `read_file`, cursor
+             export/restore), `db.rs` (`CursorRecord`, two queries, three
+             migration tests), one new SQL file. Reverting the code is safe
+             against a migrated database: queries name their columns and the
+             new one has a default. Dropping the column needs a new migration.
+
+## 2026-10-22 — slice-8, PR #106
+Question:    Cursors persisted before this change counted oversized lines as
+             `malformed`. What happens to those counts?
+Chosen:      They stay `malformed`, so the file keeps showing as `degraded`
+             until it is truncated or replaced, and the specification says so.
+             They can't be split without re-reading the file from offset 0,
+             which would replay history as current activity.
+Rejected:    Zeroing `malformed` in the migration. That would also erase real
+             parse failures, turning missing evidence into a clean state.
+Blast radius: Existing installs only. The owner should use a fresh transcript
+             to look at the new behavior (PR review pack).
+
+## 2026-10-22 — slice-8, PR #106
+Question:    Should the event on an oversized line still be applied (#95's
+             optional criterion)?
+Chosen:      No, not in this slice. The event is still dropped, and the health
+             detail says "their events were not applied". Claude Code writes
+             `timestamp` after `message`, so a bounded parse of the leading
+             bytes can't recover it. Scanning raw bytes for `"type":` is
+             ambiguous because content blocks carry their own `type` keys.
+Rejected:    (a) A byte-pattern scraper for `type`/`timestamp`/`sessionId`. It
+             is fragile, and a false match would manufacture an event.
+             (b) A streaming JSON parse that skips `image` payloads. This is
+             the correct route, but it is a new parsing path larger than this
+             slice. Left for a follow-up.
+Blast radius: None. The behavior is unchanged from before this slice.
