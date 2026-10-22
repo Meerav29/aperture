@@ -406,8 +406,22 @@ Acceptance (from the issue; do not weaken):
 
 ## slice-8: Issue #95: oversized pasted-screenshot records mark Claude Code "degraded"
 
-Status: in-review
-PR: [#106](https://github.com/Meerav29/aperture/pull/106)
+Status: merged
+PR: [#106](https://github.com/Meerav29/aperture/pull/106) — merged to `auto/queue`
+by the review routine 2026-10-22 as `495480d`.
+
+Criteria 1-3 were verified against the diff; the optional fourth (turn-start
+recovery from the oversized line) was not attempted (decisions.md, slice-8 #3).
+CI (`web`, and `rust` on `windows-latest`) was green on `5795bd7`. The review
+re-ran `cargo test --locked` in a Linux sandbox (lib 83, `durable_recovery` 1,
+`hook_bridge_cli` 2, all passed) and reproduced the PR's main mutation: with
+`oversized += 1` reverted to `malformed += 1`, both new passive tests fail
+(81 passed, 2 failed). That is evidence about code, not about a host.
+
+Carried forward, not blocking: `state` is covered only through the pure
+`passive_state`, not through `poll` (the test can't isolate the real hook
+inbox). Pre-split `malformed` counts on existing installs stay malformed
+(decision 2), so the owner's real-transcript check needs a fresh transcript.
 Issue: [#95](https://github.com/Meerav29/aperture/issues/95)
 
 Acceptance (from the issue):
