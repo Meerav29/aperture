@@ -19,6 +19,7 @@ pub struct CursorRecord {
     pub offset: u64,
     pub initial_len: u64,
     pub malformed: u64,
+    pub oversized: u64,
     pub session_id: Option<String>,
     pub host: Option<String>,
     pub created_ns: Option<i64>,
@@ -92,7 +93,10 @@ pub fn data_dir() -> PathBuf {
         })
 }
 
-const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_init.sql"),
+    include_str!("migrations/0002_cursor_oversized.sql"),
+];
 
 impl Db {
     /// Open (creating if needed) the database at `path`, running any
@@ -271,11 +275,12 @@ impl Db {
             for c in &changed {
                 tx.execute(
                     "INSERT INTO file_cursors
-                        (path, provider, offset, initial_len, malformed, session_id, host, created_ns, updated_at)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                        (path, provider, offset, initial_len, malformed, oversized, session_id, host, created_ns, updated_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                      ON CONFLICT(path) DO UPDATE SET
                         provider = excluded.provider, offset = excluded.offset,
                         initial_len = excluded.initial_len, malformed = excluded.malformed,
+                        oversized = excluded.oversized,
                         session_id = excluded.session_id, host = excluded.host,
                         created_ns = excluded.created_ns, updated_at = excluded.updated_at",
                     params![
@@ -284,6 +289,7 @@ impl Db {
                         c.offset as i64,
                         c.initial_len as i64,
                         c.malformed as i64,
+                        c.oversized as i64,
                         c.session_id,
                         c.host,
                         c.created_ns,
@@ -302,7 +308,8 @@ impl Db {
     pub fn load_cursors(&self) -> rusqlite::Result<Vec<CursorRecord>> {
         let guard = self.state.lock().expect("db lock");
         let mut stmt = guard.conn.prepare(
-            "SELECT path, provider, offset, initial_len, malformed, session_id, host, created_ns
+            "SELECT path, provider, offset, initial_len, malformed, oversized, session_id, host,
+                    created_ns
              FROM file_cursors",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -312,9 +319,10 @@ impl Db {
                 offset: row.get::<_, i64>(2)? as u64,
                 initial_len: row.get::<_, i64>(3)? as u64,
                 malformed: row.get::<_, i64>(4)? as u64,
-                session_id: row.get(5)?,
-                host: row.get(6)?,
-                created_ns: row.get(7)?,
+                oversized: row.get::<_, i64>(5)? as u64,
+                session_id: row.get(6)?,
+                host: row.get(7)?,
+                created_ns: row.get(8)?,
             })
         })?;
         rows.collect()
@@ -816,6 +824,7 @@ mod tests {
             offset: 1234,
             initial_len: 1000,
             malformed: 2,
+            oversized: 3,
             session_id: Some("abc".into()),
             host: Some("terminal".into()),
             created_ns: Some(555),
@@ -900,10 +909,18 @@ mod tests {
         migrate(&conn, Path::new(":memory:"), MIGRATIONS).unwrap();
     }
 
-    /// Stand-in for the `0002_*.sql` that a later feature will add. `MIGRATIONS`
-    /// holds exactly one entry today, so the two-step upgrade path has no real
-    /// second step to exercise yet; what these tests check is the sequencing
-    /// and rollback contract around it, not this SQL.
+    /// The `user_version` a file `Db::open` created is left at.
+    const CURRENT: i64 = MIGRATIONS.len() as i64;
+
+    /// `MIGRATIONS` followed by one more entry, as a later build would ship it.
+    fn with_next<'a>(next: &'a str) -> Vec<&'a str> {
+        MIGRATIONS.iter().copied().chain([next]).collect()
+    }
+
+    /// Stand-in for the next `000N_*.sql` a later feature will add, applied on
+    /// top of every real migration. What these tests check is the sequencing
+    /// and rollback contract around it, not this SQL. (Named for the slice-3
+    /// tests that introduced it, when `MIGRATIONS` held one entry.)
     const SECOND_MIGRATION: &str = "CREATE TABLE session_labels (\n\
          session_id TEXT PRIMARY KEY,\n\
          label TEXT NOT NULL\n\
@@ -970,18 +987,18 @@ mod tests {
         let conn = Connection::open(&path).unwrap();
         assert_eq!(
             user_version(&conn),
-            1,
+            CURRENT,
             "setup must leave an already-migrated file, not a fresh one"
         );
         let before = summary_rows(&conn);
         assert_eq!(before.len(), 1, "setup must leave migration 1 with rows in it");
 
-        migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION]).unwrap();
+        migrate(&conn, &path, &with_next(SECOND_MIGRATION)).unwrap();
 
-        // Only migration 2 ran. Had `migrate` re-applied migration 1, the
+        // Only the new migration ran. Had `migrate` re-applied migration 1, the
         // `CREATE TABLE session_summaries` in `0001_init.sql` would have failed
         // above with "table already exists".
-        assert_eq!(user_version(&conn), 2);
+        assert_eq!(user_version(&conn), CURRENT + 1);
         assert!(table_exists(&conn, "session_labels"), "migration 2's schema is missing");
         assert_eq!(summary_rows(&conn), before, "migration 1's rows were disturbed");
 
@@ -1005,7 +1022,7 @@ mod tests {
 
         let conn = Connection::open(&path).unwrap();
         let before = summary_rows(&conn);
-        let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
+        let result = migrate(&conn, &path, &with_next(SECOND_MIGRATION_THAT_FAILS));
         assert!(result.is_err(), "an invalid migration 2 must surface as an error");
         // `migrate` now rolls back explicitly before returning, so by this
         // point the transaction is already unwound; dropping the connection
@@ -1028,9 +1045,9 @@ mod tests {
             "the backup must hold the post-migration-1 state"
         );
 
-        // And the file is still usable at version 1, with migration 1's rows.
+        // And the file is still usable at its last committed version, with its rows.
         let conn = Connection::open(&path).unwrap();
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), CURRENT);
         assert!(
             !table_exists(&conn, "session_labels"),
             "migration 2's half-applied schema survived the rollback"
@@ -1065,7 +1082,7 @@ mod tests {
             "setup must hand this test a connection with no transaction open"
         );
 
-        let result = migrate(&conn, &path, &[MIGRATIONS[0], SECOND_MIGRATION_THAT_FAILS]);
+        let result = migrate(&conn, &path, &with_next(SECOND_MIGRATION_THAT_FAILS));
         assert!(result.is_err(), "an invalid migration 2 must surface as an error");
         assert!(
             conn.is_autocommit(),
@@ -1075,10 +1092,10 @@ mod tests {
 
         // And the rollback really unwound migration 2's work rather than
         // merely closing the transaction: the half-applied table is gone, the
-        // version is still 1, and migration 1's row is still readable *on
+        // version is unchanged, and migration 1's row is still readable *on
         // this same connection*, which is the thing a caller that kept it
         // would go on to do.
-        assert_eq!(user_version(&conn), 1);
+        assert_eq!(user_version(&conn), CURRENT);
         assert!(
             !table_exists(&conn, "session_labels"),
             "migration 2's half-applied schema survived the rollback"
@@ -1094,6 +1111,32 @@ mod tests {
         .expect("the connection must still be usable after a failed migration");
 
         drop(conn);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_version_1_cursor_row_upgrades_with_its_malformed_count_and_no_oversized() {
+        // #95: migration 2 splits oversized lines out of `malformed`. A row
+        // written before it existed cannot be split retroactively, so it keeps
+        // the count it had and reads as zero oversized.
+        let dir = migration_scratch_dir("cursor-oversized");
+        let path = dir.join("v1.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            migrate(&conn, &path, &MIGRATIONS[..1]).unwrap();
+            conn.execute(
+                "INSERT INTO file_cursors (path, provider, offset, initial_len, malformed, updated_at)
+                 VALUES ('f.jsonl', 'claude_code', 10, 10, 2, '2026-10-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let db = Db::open(&path).unwrap();
+        let cursors = db.load_cursors().unwrap();
+        assert_eq!(cursors.len(), 1);
+        assert_eq!((cursors[0].malformed, cursors[0].oversized), (2, 0));
+        drop(db);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

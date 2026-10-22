@@ -1,0 +1,1 @@
+ALTER TABLE file_cursors ADD COLUMN oversized INTEGER NOT NULL DEFAULT 0;

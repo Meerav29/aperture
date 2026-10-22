@@ -406,7 +406,7 @@ Acceptance (from the issue; do not weaken):
 
 ## slice-8: Issue #95: oversized pasted-screenshot records mark Claude Code "degraded"
 
-Status: todo
+Status: in-progress
 Issue: [#95](https://github.com/Meerav29/aperture/issues/95)
 
 Acceptance (from the issue):

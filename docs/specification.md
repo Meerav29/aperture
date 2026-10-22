@@ -267,6 +267,15 @@ replacement, malformed records, and inaccessible files. Debounce file events;
 use a 30-second reconciliation scan as a watcher fallback. Bound backfill
 concurrency to two files and prioritize active/recent sessions.
 
+Current behavior (#95): the passive reader caps a buffered transcript line at
+1 MiB. A complete line over the cap is skipped unread and counted as
+*oversized*, separately from unparseable lines. A valid record can exceed the
+cap (a Claude Code prompt with pasted screenshots inlined as base64), so
+oversized lines alone do not set a provider's health to `degraded`; read errors
+and unparseable lines still do. The oversized count stays in the health detail
+and persists with the file cursor, and the event on such a line is not applied.
+Counts persisted before this split cannot be separated and remain malformed.
+
 Keep raw transcripts in their original location. Retain normalized activity for
 seven days and historical summaries for 90 days by default; allow deletion of
 Aperture history without deleting provider files. “Hide” persists across rescans;
