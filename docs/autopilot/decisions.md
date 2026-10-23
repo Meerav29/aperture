@@ -725,3 +725,36 @@ Rejected:    (a) A byte-pattern scraper for `type`/`timestamp`/`sessionId`. It
              the correct route, but it is a new parsing path larger than this
              slice. Left for a follow-up.
 Blast radius: None. The behavior is unchanged from before this slice.
+
+## 2026-10-23 — slice-9, PR #108
+Question:    When one of several pending hook requests resolves (#51), which
+             still-pending request should `blocked_on` name?
+Chosen:      The newest still-pending one, with `attention` and `activity`
+             following it (`permission` vs `explicit_input`). This keeps the
+             existing rule that `blocked_on` is the most recent request.
+             `Store.hook_pending` becomes an arrival-ordered
+             `Vec<Pending { id, tool, question }>` so the tool name is known.
+Rejected:    (a) The oldest pending one. The display would flip whenever a
+             newer request arrives and then resolves.
+             (b) Listing every pending tool. That changes `Session`'s
+             `blocked_on` shape, which is #9's contract.
+Blast radius: `hook_bridge.rs` (`apply`, new `Pending`/`push_pending`) and the
+             field type in `state.rs`. In memory only: nothing persisted, no
+             migration.
+
+## 2026-10-23 — slice-9, PR #108
+Question:    #53 suggests moving the ordering guard above the `cwd`/`host`/
+             `transcript_path` writes. Should a stale line be dropped
+             entirely?
+Chosen:      No. A stale line may fill a field that is still empty (`cwd`
+             empty, `transcript_path` `None`, host `Unknown`) but never
+             overwrites one. A hook event creates the session with an empty
+             `cwd` and the hook's timestamp, so transcript lines written just
+             before it are "stale" and a strict early return would leave `cwd`
+             empty until a later line supplies it (for Codex, the next
+             `turn_context`).
+Rejected:    Strict early return before all three writes, as the issue
+             proposes. It would meet the criterion but leave hook-first
+             sessions without a `cwd` longer.
+Blast radius: The top of `passive::apply`. Non-stale lines behave exactly as
+             before.

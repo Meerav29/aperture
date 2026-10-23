@@ -215,6 +215,27 @@ fn owned_name(name: &str) -> bool {
         })
 }
 
+/// One unresolved permission or question request, in arrival order per session.
+pub(crate) struct Pending {
+    id: String,
+    tool: Option<String>,
+    question: bool,
+}
+
+/// Record a request; a repeated ID moves to the end rather than duplicating.
+fn push_pending(
+    all: &mut std::collections::HashMap<String, Vec<Pending>>,
+    key: String,
+    id: Option<String>,
+    tool: Option<String>,
+    question: bool,
+) {
+    let id = id.unwrap_or_default();
+    let pending = all.entry(key).or_default();
+    pending.retain(|p| p.id != id);
+    pending.push(Pending { id, tool, question });
+}
+
 fn apply(store: &mut Store, e: Event) {
     if e.version != 1
         || !valid_id(&e.session_id)
@@ -251,7 +272,21 @@ fn apply(store: &mut Store, e: Event) {
         let Some(pending) = store.hook_pending.get_mut(&key) else {
             return;
         };
-        if !pending.remove(id) || !pending.is_empty() {
+        let Some(i) = pending.iter().position(|p| &p.id == id) else {
+            return;
+        };
+        pending.remove(i);
+        // Still blocked: name the newest request that is actually pending.
+        if let Some(p) = pending.last() {
+            s.blocked_on = p.tool.clone();
+            (s.attention, s.activity) = if p.question {
+                ("explicit_input".into(), Some("Question requested".into()))
+            } else {
+                (
+                    "permission".into(),
+                    Some("Permission requested; confirm in original app".into()),
+                )
+            };
             return;
         }
     }
@@ -266,22 +301,26 @@ fn apply(store: &mut Store, e: Event) {
     });
     match e.event.as_str() {
         "PermissionRequest" => {
-            store
-                .hook_pending
-                .entry(key)
-                .or_default()
-                .insert(e.tool_use_id.clone().unwrap_or_default());
+            push_pending(
+                &mut store.hook_pending,
+                key,
+                e.tool_use_id.clone(),
+                e.tool.clone(),
+                false,
+            );
             s.status = SessionStatus::Blocked;
             s.attention = "permission".into();
             s.blocked_on = e.tool.clone();
             s.activity = Some("Permission requested; confirm in original app".into());
         }
         "PreToolUse" if is_question => {
-            store
-                .hook_pending
-                .entry(key)
-                .or_default()
-                .insert(e.tool_use_id.clone().unwrap_or_default());
+            push_pending(
+                &mut store.hook_pending,
+                key,
+                e.tool_use_id.clone(),
+                e.tool.clone(),
+                true,
+            );
             s.status = SessionStatus::Blocked;
             s.attention = "explicit_input".into();
             s.blocked_on = e.tool;
@@ -406,6 +445,43 @@ mod tests {
         assert_eq!(store.sessions["codex:same"].status, SessionStatus::Working);
         apply(&mut store, event("claude_code", "StopFailure", ""));
         assert_eq!(store.sessions["claude_code:same"].attention, "error");
+    }
+
+    #[test]
+    fn resolving_the_newest_of_two_requests_names_the_one_still_pending() {
+        let mut store = Store::default();
+        apply(
+            &mut store,
+            event("claude_code", "PermissionRequest", "Bash"),
+        );
+        apply(
+            &mut store,
+            event("claude_code", "PreToolUse", "AskUserQuestion"),
+        );
+        apply(
+            &mut store,
+            event("claude_code", "PostToolUse", "AskUserQuestion"),
+        );
+        let s = &store.sessions["claude_code:same"];
+        assert_eq!(s.status, SessionStatus::Blocked);
+        assert_eq!(s.blocked_on.as_deref(), Some("Bash"));
+        assert_eq!(s.attention, "permission");
+        apply(&mut store, event("claude_code", "PostToolUse", "Bash"));
+        let s = &store.sessions["claude_code:same"];
+        assert_eq!(s.status, SessionStatus::Working);
+        assert_eq!(s.blocked_on, None);
+    }
+
+    #[test]
+    fn resolving_an_older_request_keeps_naming_the_newer_pending_one() {
+        let mut store = Store::default();
+        apply(&mut store, event("codex", "PermissionRequest", "A"));
+        apply(&mut store, event("codex", "PermissionRequest", "B"));
+        apply(&mut store, event("codex", "PostToolUse", "A"));
+        assert_eq!(
+            store.sessions["codex:same"].blocked_on.as_deref(),
+            Some("B")
+        );
     }
 
     #[test]

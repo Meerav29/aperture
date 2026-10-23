@@ -396,10 +396,17 @@ fn adapt(
                 "unknown",
             ),
             "assistant" => {
-                let tool = v
+                // Parallel tool calls share one message, so a question may sit
+                // behind unrelated tool_use blocks; it outranks them.
+                let tools: Vec<&Value> = v
                     .pointer("/message/content")
                     .and_then(Value::as_array)
-                    .and_then(|a| a.iter().find(|b| b["type"] == "tool_use"));
+                    .map(|a| a.iter().filter(|b| b["type"] == "tool_use").collect())
+                    .unwrap_or_default();
+                let tool = tools
+                    .iter()
+                    .find(|b| b["name"] == "AskUserQuestion")
+                    .or_else(|| tools.first());
                 if let Some(tool) = tool {
                     let input = tool["name"] == "AskUserQuestion";
                     (
@@ -486,16 +493,23 @@ fn apply(store: &mut Store, provider: &str, path: &Path, event: Event, appended:
         s.native_id = event.id.clone();
         s
     });
+    // A stale line (e.g. replayed after a truncation reset) may fill a field
+    // nothing has supplied yet, but never overwrites one a later line set.
+    let stale = event.at < s.last_event_at;
     if let Some(cwd) = event.cwd {
-        s.cwd = cwd;
+        if !stale || s.cwd.is_empty() {
+            s.cwd = cwd;
+        }
     }
     if s.host == Host::Unknown {
         if let Some(h) = event.host {
             s.host = h;
         }
     }
-    s.transcript_path = Some(path.to_string_lossy().into_owned());
-    if event.at < s.last_event_at {
+    if !stale || s.transcript_path.is_none() {
+        s.transcript_path = Some(path.to_string_lossy().into_owned());
+    }
+    if stale {
         return;
     }
     // Permission hooks carry evidence absent from generic transcript entries.
@@ -785,6 +799,60 @@ mod tests {
             read_file(&path, "claude_code", &mut cursor, &mut store, false).unwrap(),
             1
         );
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn a_question_behind_another_tool_use_block_still_blocks() {
+        let ts = Utc::now().to_rfc3339();
+        let mut id = None;
+        let mut host = None;
+        let mut store = Store::default();
+        let parallel = json!({"type":"assistant","sessionId":"p","timestamp":ts,"message":{"content":[
+            {"type":"text","text":"redacted"},
+            {"type":"tool_use","name":"Read"},
+            {"type":"tool_use","name":"AskUserQuestion"}
+        ]}});
+        apply(
+            &mut store,
+            "claude_code",
+            Path::new("fixture"),
+            adapt("claude_code", &parallel, &mut id, &mut host).unwrap(),
+            true,
+        );
+        let s = &store.sessions["claude_code:p"];
+        assert_eq!(s.status, SessionStatus::Blocked);
+        assert_eq!(s.attention, "explicit_input");
+    }
+
+    #[test]
+    fn a_replay_after_truncation_does_not_revert_cwd_or_host() {
+        let root =
+            std::env::temp_dir().join(format!("aperture-passive-replay-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("replay.jsonl");
+        let now = Utc::now();
+        let line = |at: chrono::DateTime<Utc>, cwd: &str, entrypoint: &str| {
+            json!({"type":"user","sessionId":"r","timestamp":at.to_rfc3339(),"cwd":cwd,
+                "entrypoint":entrypoint,"message":{"content":"redacted"}})
+            .to_string()
+        };
+        let earlier = line(now - chrono::Duration::seconds(30), "C:\\old", "cli");
+        let later = line(now, "C:\\new", "claude-vscode");
+        std::fs::write(&path, format!("{later}\n")).unwrap();
+        let mut cursor = Cursor::default();
+        let mut store = Store::default();
+        read_file(&path, "claude_code", &mut cursor, &mut store, false).unwrap();
+        assert_eq!(store.sessions["claude_code:r"].cwd, "C:\\new");
+        // Shorter rewrite: read_file resets to offset 0 and replays the old line.
+        std::fs::write(&path, format!("{earlier}\n")).unwrap();
+        read_file(&path, "claude_code", &mut cursor, &mut store, false).unwrap();
+        assert_eq!(cursor.offset, earlier.len() as u64 + 1);
+        let s = &store.sessions["claude_code:r"];
+        assert_eq!(s.cwd, "C:\\new");
+        assert_eq!(s.host, Host::VsCode);
+        assert_eq!(s.last_event_at, now);
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(root).unwrap();
     }
