@@ -46,7 +46,7 @@ fn idle_past(s: &Session, now: DateTime<Utc>, max_idle: Duration) -> bool {
 #[derive(Default)]
 pub struct Store {
     pub(crate) hook_activity: HashMap<String, chrono::DateTime<Utc>>,
-    pub(crate) hook_pending: HashMap<String, std::collections::HashSet<String>>,
+    pub(crate) hook_pending: HashMap<String, Vec<super::hook_bridge::Pending>>,
     pub revision: u64,
     pub integrations: Vec<super::model::IntegrationHealth>,
     pub(crate) sessions: HashMap<String, Session>,

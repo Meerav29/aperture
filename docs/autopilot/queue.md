@@ -434,7 +434,7 @@ Acceptance (from the issue):
 
 ## slice-9: Issues #51, #52, #53: reducer correctness
 
-Status: todo
+Status: in-progress
 Issues: [#51](https://github.com/Meerav29/aperture/issues/51), [#52](https://github.com/Meerav29/aperture/issues/52), [#53](https://github.com/Meerav29/aperture/issues/53)
 
 One slice because all three are small, live in `hook_bridge.rs` / `passive.rs`,
