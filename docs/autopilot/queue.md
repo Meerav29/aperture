@@ -434,8 +434,8 @@ Acceptance (from the issue):
 
 ## slice-9: Issues #51, #52, #53: reducer correctness
 
-Status: in-review
-PR: [#108](https://github.com/Meerav29/aperture/pull/108)
+Status: merged
+PR: [#108](https://github.com/Meerav29/aperture/pull/108) — merged to `auto/queue` by the review routine 2026-10-23 (`4a6f418`). CI (`rust` on windows-latest, `web`) green on `f0d881f`; the review re-ran `cargo test --lib` in a Linux sandbox (87 passed) and reverted each of the three fixes on its own: each fails exactly its own regression test (86 passed, 1 failed). Evidence about code only, not about a host.
 Issues: [#51](https://github.com/Meerav29/aperture/issues/51), [#52](https://github.com/Meerav29/aperture/issues/52), [#53](https://github.com/Meerav29/aperture/issues/53)
 
 One slice because all three are small, live in `hook_bridge.rs` / `passive.rs`,
