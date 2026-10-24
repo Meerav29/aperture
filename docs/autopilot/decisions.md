@@ -758,3 +758,33 @@ Rejected:    Strict early return before all three writes, as the issue
              sessions without a `cwd` longer.
 Blast radius: The top of `passive::apply`. Non-stale lines behave exactly as
              before.
+
+## 2026-10-24 — slice-10, PR #110
+Question:    #45's tests need `state` asserted through `Observer::poll`, but
+             `poll` also reads this machine's real hook inbox
+             (`hook_bridge::inbox()`), and any inbox error forces every row to
+             `degraded`. Slice-8 left `state` unasserted for that reason. How
+             should a test isolate it?
+Chosen:      A private `hook_inbox: Option<PathBuf>` on `Observer`, set only
+             through a `#[cfg(test)]` `with_hook_inbox`. Tests point it at a
+             path that does not exist. In production it is always `None`, and
+             `poll` still calls `hook_bridge::inbox()` on every poll as before.
+Rejected:    (a) Setting `APERTURE_HOOK_DIR` in the test. Environment variables
+             are process-global and `cargo test` runs tests in parallel, so it
+             would race with every other test that polls.
+             (b) Asserting only `detail`, as slice-8 did. That leaves the issue's
+             `state` criteria untested.
+Blast radius: One private field and one test-only method in `passive.rs`. The
+             non-test code path is unchanged apart from where the inbox
+             lookup's result is read from. Reverting means deleting both.
+
+## 2026-10-24 — slice-10, PR #110
+Question:    How should a test produce an "inaccessible" provider root?
+Chosen:      A missing root, plus a root path that is a regular file rather than
+             a directory. Both make `read_dir` fail on every OS.
+Rejected:    Removing read permission with `chmod`. Root ignores mode bits (the
+             cloud sandbox runs as root), and Windows uses ACLs, so the test
+             would pass or fail depending on the host and not on the code.
+Blast radius: Tests only. A permission-denied root on a real host is still
+             untested here. It follows the same `read_dir` error branch in
+             `discover`, but this slice does not establish that on a host.

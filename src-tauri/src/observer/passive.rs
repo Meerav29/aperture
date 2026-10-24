@@ -32,6 +32,9 @@ struct Cursor {
 pub struct Observer {
     roots: Vec<(String, PathBuf)>,
     cursors: HashMap<PathBuf, Cursor>,
+    /// Test-only replacement for `hook_bridge::inbox()`, so a test's `poll`
+    /// does not fold in this machine's real hook inbox. `None` in production.
+    hook_inbox: Option<PathBuf>,
 }
 
 impl Default for Observer {
@@ -52,11 +55,21 @@ impl Observer {
         Self {
             roots: vec![("claude_code".into(), claude), ("codex".into(), codex)],
             cursors: HashMap::new(),
+            hook_inbox: None,
         }
     }
 
+    #[cfg(test)]
+    fn with_hook_inbox(mut self, inbox: PathBuf) -> Self {
+        self.hook_inbox = Some(inbox);
+        self
+    }
+
     pub fn poll(&mut self, store: &mut Store) {
-        let hook_errors = super::hook_bridge::inbox()
+        let hook_errors = self
+            .hook_inbox
+            .clone()
+            .or_else(super::hook_bridge::inbox)
             .map(|root| super::hook_bridge::poll(&root, store))
             .unwrap_or(0);
         let mut health = Vec::new();
@@ -950,8 +963,8 @@ mod tests {
 
         // Through `poll` and a cursor round trip: the oversized count reaches
         // the health detail, separately from skipped records, and survives a
-        // restart. `state` is not asserted here because `poll` also folds in
-        // this machine's real hook inbox; `passive_state` above covers it.
+        // restart. `state` through `poll`, with the real hook inbox swapped
+        // out, is covered by `malformed_and_oversized_counts_reach_the_polled_detail`.
         let root =
             std::env::temp_dir().join(format!("aperture-oversized-poll-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -979,6 +992,145 @@ mod tests {
             restored.contains("0 skipped records. 1 oversized record"),
             "{restored}"
         );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A scratch directory holding both provider roots, polled with a hook
+    /// inbox that does not exist so the real one cannot affect `state` (#45).
+    fn health_scratch(name: &str) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("aperture-health-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn poll_health(root: &Path) -> Vec<IntegrationHealth> {
+        let mut observer = Observer::new(root.join("claude"), root.join("codex"))
+            .with_hook_inbox(root.join("no-hook-inbox"));
+        let mut store = Store::default();
+        observer.poll(&mut store);
+        store.integrations
+    }
+
+    fn write_codex_session(root: &Path) {
+        let ts = Utc::now().to_rfc3339();
+        let dir = root.join("codex").join("2026").join("10").join("24");
+        std::fs::create_dir_all(&dir).unwrap();
+        let lines = [
+            json!({"type":"session_meta","timestamp":ts,"payload":{"id":"c1","cwd":"C:\\r"}}),
+            json!({"type":"event_msg","timestamp":ts,"payload":{"type":"task_started"}}),
+        ];
+        let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+        std::fs::write(dir.join("rollout-c1.jsonl"), body).unwrap();
+    }
+
+    #[test]
+    fn a_missing_or_unreadable_root_degrades_only_its_own_provider() {
+        let root = health_scratch("missing");
+        write_codex_session(&root);
+        // Claude's root does not exist at all.
+        let health = poll_health(&root);
+        let (claude, codex) = (&health[0], &health[1]);
+        assert_eq!(claude.provider, "claude_code");
+        assert_eq!(claude.state, "degraded");
+        assert_eq!(claude.files, 0);
+        assert!(
+            claude.detail.contains("1 file read errors"),
+            "{}",
+            claude.detail
+        );
+        assert_eq!(codex.provider, "codex");
+        assert_eq!(codex.state, "watching");
+        assert_eq!(codex.files, 1);
+        assert!(codex.last_event_at.is_some());
+        assert!(
+            codex
+                .detail
+                .contains("0 file read errors; 0 skipped records."),
+            "{}",
+            codex.detail
+        );
+
+        // A root path that is a file, not a directory, cannot be listed either.
+        std::fs::write(root.join("claude"), b"not a directory").unwrap();
+        let health = poll_health(&root);
+        assert_eq!(
+            (health[0].state.as_str(), health[1].state.as_str()),
+            ("degraded", "watching")
+        );
+        assert!(
+            health[0].detail.contains("1 file read errors"),
+            "{}",
+            health[0].detail
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_root_with_no_session_files_reports_no_sessions() {
+        let root = health_scratch("empty");
+        std::fs::create_dir_all(root.join("claude").join("C--empty-project")).unwrap();
+        std::fs::write(root.join("claude").join("notes.txt"), b"not a transcript").unwrap();
+        std::fs::create_dir_all(root.join("codex")).unwrap();
+        let health = poll_health(&root);
+        for h in &health {
+            assert_eq!(h.state, "no_sessions", "{}: {}", h.provider, h.detail);
+            assert_eq!(h.files, 0);
+            assert_eq!(h.last_event_at, None);
+            assert!(
+                h.detail.contains("0 file read errors; 0 skipped records."),
+                "{}",
+                h.detail
+            );
+        }
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn malformed_and_oversized_counts_reach_the_polled_detail() {
+        let root = health_scratch("records");
+        write_codex_session(&root);
+        let project = root.join("claude").join("C--p");
+        std::fs::create_dir_all(&project).unwrap();
+        // Only an oversized record: reported, but not degraded (#95).
+        std::fs::write(
+            project.join("big.jsonl"),
+            format!("{}\n", screenshot_record("big")),
+        )
+        .unwrap();
+        let health = poll_health(&root);
+        assert_eq!(health[0].state, "watching");
+        assert!(
+            health[0]
+                .detail
+                .contains("0 skipped records. 1 oversized record"),
+            "{}",
+            health[0].detail
+        );
+
+        // Two unparseable lines in another file degrade the row and are counted.
+        let ts = Utc::now().to_rfc3339();
+        let ok = json!({"type":"assistant","sessionId":"bad","timestamp":ts,"message":{"content":[{"type":"text","text":"hi"}]}});
+        std::fs::write(
+            project.join("bad.jsonl"),
+            format!("not json\n{ok}\n{{\"truncated\n"),
+        )
+        .unwrap();
+        let health = poll_health(&root);
+        assert_eq!(health[0].state, "degraded");
+        assert!(
+            health[0]
+                .detail
+                .contains("0 file read errors; 2 skipped records. 1 oversized record"),
+            "{}",
+            health[0].detail
+        );
+        assert_eq!(health[0].files, 2);
+        // The other provider's row is unaffected.
+        assert_eq!(health[1].state, "watching");
 
         std::fs::remove_dir_all(&root).unwrap();
     }
