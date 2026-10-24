@@ -454,7 +454,7 @@ Acceptance (one per issue):
 
 ## slice-10: Issue #45: IntegrationHealth test coverage
 
-Status: todo
+Status: in-progress
 Issue: [#45](https://github.com/Meerav29/aperture/issues/45)
 
 Test-only, unless a test exposes a bug. In that case, fix it in the same PR and
