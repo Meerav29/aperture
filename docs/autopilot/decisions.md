@@ -759,7 +759,7 @@ Rejected:    Strict early return before all three writes, as the issue
 Blast radius: The top of `passive::apply`. Non-stale lines behave exactly as
              before.
 
-## 2026-10-24 — slice-10, PR #PENDING
+## 2026-10-24 — slice-10, PR #110
 Question:    #45's tests need `state` asserted through `Observer::poll`, but
              `poll` also reads this machine's real hook inbox
              (`hook_bridge::inbox()`), and any inbox error forces every row to
@@ -778,7 +778,7 @@ Blast radius: One private field and one test-only method in `passive.rs`. The
              non-test code path is unchanged apart from where the inbox
              lookup's result is read from. Reverting means deleting both.
 
-## 2026-10-24 — slice-10, PR #PENDING
+## 2026-10-24 — slice-10, PR #110
 Question:    How should a test produce an "inaccessible" provider root?
 Chosen:      A missing root, plus a root path that is a regular file rather than
              a directory. Both make `read_dir` fail on every OS.

@@ -454,7 +454,8 @@ Acceptance (one per issue):
 
 ## slice-10: Issue #45: IntegrationHealth test coverage
 
-Status: in-progress
+Status: in-review
+PR: [#110](https://github.com/Meerav29/aperture/pull/110), opened against `auto/queue` 2026-10-24.
 Issue: [#45](https://github.com/Meerav29/aperture/issues/45)
 
 Test-only, unless a test exposes a bug. In that case, fix it in the same PR and
