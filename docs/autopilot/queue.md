@@ -454,8 +454,10 @@ Acceptance (one per issue):
 
 ## slice-10: Issue #45: IntegrationHealth test coverage
 
-Status: in-review
-PR: [#110](https://github.com/Meerav29/aperture/pull/110), opened against `auto/queue` 2026-10-24.
+Status: merged
+PR: [#110](https://github.com/Meerav29/aperture/pull/110) — merged to `auto/queue` by the review routine 2026-10-24 as `d8ffb47`.
+
+All three criteria were verified against the diff. CI (`web`, and `rust` on `windows-latest`) was green on `81b4102`. The review re-ran `cargo test --locked` in a Linux sandbox (lib 90, `durable_recovery` 1, `hook_bridge_cli` 2, all passed) and applied four of the PR's mutations itself, one at a time: dropping `*errors += 1` in `discover`'s `read_dir` branch fails only `a_missing_or_unreadable_root_degrades_only_its_own_provider` (89/1); dropping `malformed += cursor.malformed` in `poll` fails only `malformed_and_oversized_counts_reach_the_polled_detail` (89/1); removing the `no_sessions` branch fails `a_root_with_no_session_files_reports_no_sessions` and the slice-8 `oversized_records_alone_…` test (88/2); dropping `oversized += cursor.oversized` fails `malformed_and_oversized_…` and the same slice-8 test (88/2). The test-only `hook_inbox` seam leaves production on `hook_bridge::inbox()`. That is evidence about code, not about a host: a permission-denied root and the integration panel are the owner's to check (decision 2, review pack step 5).
 Issue: [#45](https://github.com/Meerav29/aperture/issues/45)
 
 Test-only, unless a test exposes a bug. In that case, fix it in the same PR and
