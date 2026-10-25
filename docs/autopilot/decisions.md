@@ -789,7 +789,7 @@ Blast radius: Tests only. A permission-denied root on a real host is still
              untested here. It follows the same `read_dir` error branch in
              `discover`, but this slice does not establish that on a host.
 
-## 2026-10-25 — slice-11, PR #PENDING
+## 2026-10-25 — slice-11, PR #111
 Question:    Where should the bundled IBM Plex files come from, and which version?
 Chosen:      The "complete" (unsplit) woff2 builds from IBM's own npm packages,
              `@ibm/plex-sans@1.1.0` and `@ibm/plex-mono@1.1.0` (both published
@@ -808,7 +808,7 @@ Blast radius: About 290 KB of woff2 in the bundle. Google served the same
              families, but which font version it served is not known here, so
              glyph-level sameness is the owner's runtime check, not a claim.
 
-## 2026-10-25 — slice-11, PR #PENDING
+## 2026-10-25 — slice-11, PR #111
 Question:    The slice needs a test that fails without the change, but the repo
              has no frontend test tooling (#24) and autopilot may not edit
              `.github/workflows/`. Where does the test run?
