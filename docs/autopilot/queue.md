@@ -473,9 +473,9 @@ Acceptance (from the issue):
       oversized path. Test the behavior as it stands after slice-8 merged.)
 
 ## slice-11: Issue #89: bundle the IBM Plex fonts locally
+
 Status: merged
 PR: [#111](https://github.com/Meerav29/aperture/pull/111), squash-merged into `auto/queue` as 25c9886 by the review routine 2026-10-25.
-PR: [#111](https://github.com/Meerav29/aperture/pull/111), open against `auto/queue`.
 Issue: [#89](https://github.com/Meerav29/aperture/issues/89)
 
 Acceptance (from the issue):
