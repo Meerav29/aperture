@@ -474,7 +474,7 @@ Acceptance (from the issue):
 
 ## slice-11: Issue #89: bundle the IBM Plex fonts locally
 
-Status: todo
+Status: in-progress
 Issue: [#89](https://github.com/Meerav29/aperture/issues/89)
 
 Acceptance (from the issue):

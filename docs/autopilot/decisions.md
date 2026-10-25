@@ -788,3 +788,38 @@ Rejected:    Removing read permission with `chmod`. Root ignores mode bits (the
 Blast radius: Tests only. A permission-denied root on a real host is still
              untested here. It follows the same `read_dir` error branch in
              `discover`, but this slice does not establish that on a host.
+
+## 2026-10-25 — slice-11, PR #PENDING
+Question:    Where should the bundled IBM Plex files come from, and which version?
+Chosen:      The "complete" (unsplit) woff2 builds from IBM's own npm packages,
+             `@ibm/plex-sans@1.1.0` and `@ibm/plex-mono@1.1.0` (both published
+             2024-11-11), copied into `src/assets/fonts/`, with the package's
+             `LICENSE.txt` (the OFL 1.1 text, identical in both packages) as
+             `OFL.txt`. Only the faces `index.html` requested from Google Fonts:
+             Sans 400/500/600 and Mono 400/500, normal style.
+Rejected:    (a) Adding `@fontsource/*` or `@ibm/plex-*` as npm dependencies.
+             That adds a lockfile change and a dependency for five static files.
+             (b) `@ibm/plex-mono@2.5.0`, the newest Mono. It is a 2026 major
+             release with no matching Sans release, so Sans and Mono would come
+             from different Plex generations.
+             (c) Google's per-script subsets with `unicode-range`. Less to ship,
+             but it would recreate Google's subsetting by hand.
+Blast radius: About 290 KB of woff2 in the bundle. Google served the same
+             families, but which font version it served is not known here, so
+             glyph-level sameness is the owner's runtime check, not a claim.
+
+## 2026-10-25 — slice-11, PR #PENDING
+Question:    The slice needs a test that fails without the change, but the repo
+             has no frontend test tooling (#24) and autopilot may not edit
+             `.github/workflows/`. Where does the test run?
+Chosen:      `scripts/check-local-fonts.mjs`, a dependency-free Node script run
+             as the last step of `npm run build`. It fails if
+             `fonts.googleapis.com` or `fonts.gstatic.com` appears in
+             `index.html`, `src/` or `dist/`, if any of the five faces is
+             missing from `dist/` or from the built CSS, or if `OFL.txt` is
+             missing. CI's existing `npm run build` steps run it.
+Rejected:    (a) A separate `npm test` script. CI does not call it, so it would
+             only run when someone remembers to.
+             (b) Adding vitest. That is #24's decision, not this slice's.
+Blast radius: `npm run build` now also fails on a remote font reference. The
+             script checks files, not rendering.
