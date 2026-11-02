@@ -11,7 +11,7 @@ behaves.
 | Field | Value |
 |---|---|
 | Date started | 2026-10-04 16:46 EDT |
-| Code commit under test | `614ee19` (`main`). Unmerged `auto/queue` work (slices 1–3) is **not** covered |
+| Code commit under test | `614ee19` (`main` when round 1 started). Later work is **not** covered: slices 1–5 on `main`, slices 6–11 on `auto/queue` |
 | macOS version / architecture | macOS 27.0 (26A428), arm64 |
 | Node / npm | v22.18.0 / 10.9.3 |
 | Rust | rustc 1.99.0, cargo 1.99.0 (stable, via rustup) |
@@ -23,6 +23,20 @@ behaves.
 | Codex desktop app | Not installed: desktop row blocked until installed |
 | Effective roots | `~/.claude/projects`, `~/.codex/sessions` (defaults; no `CLAUDE_CONFIG_DIR`/`CODEX_HOME`) |
 | Hooks | Not enabled (passive only) |
+
+The table above is the environment at the start of round 1. Installed versions
+checked again on 2026-11-02 (each row's record states the versions it actually
+used):
+
+| Field | Value on 2026-11-02 |
+|---|---|
+| macOS version / architecture | macOS 27.0.1 (26A434), arm64 |
+| Claude Code CLI | 2.1.294 |
+| Codex CLI | codex-cli 0.161.0 |
+| Claude desktop app | Claude.app 4.4212.0 |
+| Claude Code VS Code extension | anthropic.claude-code, newest installed 2.1.311 |
+| Codex VS Code extension | openai.chatgpt, newest installed 26.1021.22027 |
+| Codex desktop app | Not found in `/Applications` or by bundle ID `com.openai.codex` |
 
 ## 1. Build and test preflight
 
@@ -42,14 +56,18 @@ Observed during preflight, not yet triaged against existing issues:
 `user_messages`, `assistant_messages` and the token counts were 0 for every
 session, and `title` was null (consistent with open issue #42).
 
+Rerun on `614ee19` on 2026-11-02 after the update to macOS 27.0.1: `npm run build`
+succeeded, and `cargo test --manifest-path src-tauri/Cargo.toml --locked` gave
+51 passed, 0 failed (49 lib, 1 `durable_recovery`, 1 `hook_bridge_cli`).
+
 ## 2. Provider/host rows
 
 | Provider | Host | Result |
 |---|---|---|
-| Claude Code | Terminal.app | Blocked: CLI not installed |
+| Claude Code | Terminal.app | Pending: CLI now installed, not yet run |
 | Claude Code | VS Code | **Partial**: discovery, resume, final status and folder navigation observed; permission prompt shows `working`/Tool: Bash/attention unknown (honest passive result); pasted images cause a false `degraded` (new finding); question, interrupt and restart pending |
 | Claude Code | Desktop Code | Pending |
-| Codex | Terminal.app | Blocked: CLI not installed |
+| Codex | Terminal.app | Pending: CLI now installed, not yet run |
 | Codex | VS Code | Pending |
 | Codex | Desktop | Blocked: app not installed |
 
@@ -76,7 +94,7 @@ Navigation action and actual result: Observed 2026-10-15. **Open folder** opened
 Build/test outputs: See preflight section 1.
 Evidence references (sanitized screenshot or trace): A dashboard screenshot from 2026-10-15 is held by the tester (not committed because it contains an unredacted home path). Transcript metadata was summarized locally by record type and tool name only; no prompt text was copied.
 Run 2 (2026-10-15 22:05–22:06 EDT, same session `6de0ec7f…`, extension as above): The tester asked Claude to delete `check.txt`. The transcript shows Bash `tool_use` at 02:06:00.435Z, then a successful `tool_result` at 02:06:00.843Z, then `end_turn` at 02:06:01.911Z, and the file was removed. **No permission prompt was shown.** The result came back in 0.4 s, and no permission mode is set in user or project settings, so the chat was most likely in a mode that approves automatically. Attention was therefore still not exercised. Aperture showed the resumed session with observation `recent`, "just now", "Turn complete", and Claude Code last activity 22:06:01, which matches the final transcript event. The header count changed to "1 recently updating sessions".
-Run 3 (2026-10-15 22:09 EDT, same session): The tester switched the chat to the default permission mode, and the transcript records `permissionMode: default`. They asked Claude to delete `hello.txt`. The transcript shows a Read call, then a Bash `tool_use` at 02:09:04.492Z. Its successful `tool_result` did not arrive until 02:09:55.522Z, a 51 s wait, which is consistent with a real permission prompt that the tester then approved. `end_turn` followed at 02:09:57Z and the file is gone. Afterwards Aperture showed `idle`, "Turn complete", and attention "unknown (no confirmed attention signal)", and Claude Code last activity was 22:09:57, which matches. **Pending:** what the card showed during the 51 s while the prompt was open (status, activity, attention). Passive mode has no permission signal, so attention is expected to stay "unknown". Only the tester's observation during the prompt can confirm that it did not wrongly show "none" or "idle".
+Run 3 (2026-10-15 22:09 EDT, same session): The tester switched the chat to the default permission mode, and the transcript records `permissionMode: default`. They asked Claude to delete `hello.txt`. The transcript shows a Read call, then a Bash `tool_use` at 02:09:04.492Z. Its successful `tool_result` did not arrive until 02:09:55.522Z, a 51 s wait, which is consistent with a real permission prompt that the tester then approved. `end_turn` followed at 02:09:57Z and the file is gone. Afterwards Aperture showed `idle`, "Turn complete", and attention "unknown (no confirmed attention signal)", and Claude Code last activity was 22:09:57, which matches. What the card showed during this 51 s wait was not captured. Run 4 records the card during a later permission prompt in the same session.
 Run 4 (2026-10-15 about 22:18 EDT, same session, default permission mode): A tester screenshot taken **while the Allow/Deny prompt was open** shows the card with `working`, "Tool: Bash", "just now", attention "unknown (no confirmed attention signal)", and observation `recent · process liveness unknown`. The header showed "1 recently updating sessions". This is the honest passive result: the tool call is visible, but the prompt itself is not. Attention did not falsely show `none` or `idle`.
 **New finding in the same screenshot:** the Claude Code integration changed to **`degraded` with "2 skipped records"**. Investigation found the two skipped lines are user messages with three pasted screenshots: 1,476,319 bytes in the test session and 1,476,311 bytes in another local Claude Code session. Both exceed the passive reader's 1 MiB `MAX_LINE`, so each counts as malformed. Consequences: (a) pasting screenshots, an ordinary action, makes provider health permanently "degraded" for that file; (b) the user-prompt event on that line is dropped, so the turn's start is not observed from that record. Filed as #95; #45 (health-state test coverage) is related.
 Known failures / pending checks: The storage-health row is labeled "Claude Code ok" rather than as storage, which reproduces open issue #28 on macOS. The session has an `ai-title` record, but the card shows the folder name instead (consistent with #42/#47). Live transitions, permission, question, interrupt, restart-during-work and navigation checks remain pending.
